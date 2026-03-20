@@ -17,17 +17,14 @@ from components.charts import COLORS, PALETTE
 @st.cache_data
 def to_excel(df):
     output = io.BytesIO()
-    writer = pd.ExcelWriter(output, engine='xlsxwriter')
-    df.to_excel(writer, index=False, sheet_name='Sheet1')
-    writer.close()
-    processed_data = output.getvalue()
-    return processed_data
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Sheet1')
+    return output.getvalue()
 
 def show(df, apply_filters):
     """Función principal de la página del Simulador"""
     
     st.title("🎚️ Simulador de Presupuesto")
-    st.markdown("---")
     
     # Aplicar filtros
     df_filtered = apply_filters(df)
@@ -40,11 +37,12 @@ def show(df, apply_filters):
     presupuesto_actual = df_filtered['Valor materiales (MS/.)'].sum()
     
     st.markdown("""
-    <div style="background: linear-gradient(135deg, #2C539E 0%, #A4B6D4 100%); 
-                border-radius: 15px; padding: 25px; color: white; margin-bottom: 20px;">
-        <h3 style="margin: 0; color: white;">Presupuesto Actual</h3>
-        <h1 style="margin: 10px 0;">S/ {:,.0f}</h1>
-        <p style="margin: 0; opacity: 0.9;">Materiales: {} | Proyectos: {}</p>
+    <div style="background-color: white; 
+                border: 1px solid #E0E0E0;
+                border-radius: 15px; padding: 25px; color: #1E3A8A; margin-bottom: 20px;">
+        <h3 style="margin: 0; color: #555555; font-weight: normal;">Presupuesto Actual</h3>
+        <h1 style="margin: 5px 0 5px 0; font-size: 2.5rem; color: #1E3A8A;">S/ {:,.0f}</h1>
+        <p style="margin: 0; color: #555555;">Materiales: {} | Proyectos: {}</p>
     </div>
     """.format(presupuesto_actual, df_filtered['DESCRIPCION'].nunique(), df_filtered['Nombre del proyecto'].nunique()), 
     unsafe_allow_html=True)
@@ -464,7 +462,7 @@ def show(df, apply_filters):
 
         st.markdown("""
         Selecciona un material y simula un cambio en su precio unitario.
-        La simulación afectará el presupuesto desde el mes actual hasta fin de año.
+        Puedes definir explícitamente desde qué mes aplicar el cambio.
         """)
 
         # Selección de material
@@ -478,8 +476,9 @@ def show(df, apply_filters):
         if material_seleccionado:
             df_material = df_filtered[df_filtered['DESCRIPCION'] == material_seleccionado]
             precio_actual = df_material['P.U. s/.'].iloc[0]
+            meses = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
 
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
 
             with col1:
                 st.metric("Precio Unitario Actual", f"S/ {precio_actual:,.2f}")
@@ -493,12 +492,18 @@ def show(df, apply_filters):
                     format="%.2f"
                 )
 
+            with col3:
+                mes_inicio = st.selectbox(
+                    "Aplicar cambio desde",
+                    meses,
+                    index=0,
+                    key="mes_inicio_precio_sim"
+                )
+
             # Simulación
             if nuevo_precio != precio_actual:
-                from datetime import datetime
-                current_month_idx = datetime.now().month # 1-12
-                meses = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
-                meses_a_recalcular = meses[current_month_idx-1:]
+                mes_inicio_idx = meses.index(mes_inicio)
+                meses_a_recalcular = meses[mes_inicio_idx:]
 
                 cant_cols = [f'Cant_{m}' for m in meses_a_recalcular]
                 valor_cols = [f'Valor_{m}' for m in meses_a_recalcular]
@@ -522,7 +527,7 @@ def show(df, apply_filters):
                 col3.metric("Cantidad Afectada (und.)", f"{cantidad_futura:,.0f}")
 
                 # Detalle por proyecto
-                st.markdown("#### Impacto por Proyecto (desde mes actual)")
+                st.markdown(f"#### Impacto por Proyecto (desde {mes_inicio})")
 
                 impacto_proyectos = df_material.groupby('Nombre del proyecto').agg(
                     {f'Cant_{m}': 'sum' for m in meses_a_recalcular}

@@ -370,14 +370,18 @@ def show(df, apply_filters):
         
         st.dataframe(tabla_completa, use_container_width=True, hide_index=True)
         
-        # Botón de exportar
+        # Exportación
         st.markdown("---")
         col1, col2, col3 = st.columns([1, 1, 1])
         
         with col2:
-            if st.button("📥 Exportar Análisis a Excel", use_container_width=True):
-                st.success("✅ Funcionalidad de exportación lista para implementar")
-                st.info("En una implementación completa, esto exportaría el análisis a Excel con las columnas de necesidades netas.")
+            st.download_button(
+                label="📥 Exportar Análisis a Excel",
+                data=exportar_analisis(df_merged).getvalue(),
+                file_name="analisis_saldos.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
     
     else:
         # Mostrar instrucciones si no hay datos
