@@ -61,6 +61,12 @@ st.markdown("""
         display: none !important;
     }
     
+    /* Reducir márgenes de la página */
+    .block-container {
+        padding-top: 1rem !important;
+        padding-bottom: 2rem !important;
+    }
+    
     /* KPIs Cards */
     .kpi-card {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -155,6 +161,34 @@ def load_data(file_path=None):
     df = df[df['Año'] == 2026]  # Solo datos de 2026
     df = df.dropna(subset=['DESCRIPCION'])  # Solo filas con descripción
     
+    # Estandarizar ID y Descripción para agrupar por Matrícula
+    if 'Matricula' in df.columns or 'Matrícula' in df.columns:
+        s_mat = df.get('Matricula', pd.Series(index=df.index))
+        if 'Matrícula' in df.columns:
+            s_mat = s_mat.combine_first(df['Matrícula'])
+        
+        s_mat = s_mat.fillna('S/M').astype(str).str.strip().replace(r'\.0$', '', regex=True)
+        # Tomar el primer nombre para no tener duplicados por ligeras diferencias
+        desc_unificada = df.groupby(s_mat, dropna=False)['DESCRIPCION'].transform('first')
+        df['DESCRIPCION'] = s_mat + " - " + desc_unificada
+        df['Matricula_Clean'] = s_mat
+
+    # Procesar columnas historicas
+    meses_hist = {
+        'Consumo 123': 'Hist_2023',
+        'Consumo 124': 'Hist_2024',
+        'Consumo 125': 'Hist_2025'
+    }
+    df = df.rename(columns=meses_hist)
+    
+    historicos = [col for col in ['Hist_2023', 'Hist_2024', 'Hist_2025'] if col in df.columns]
+    if historicos:
+        for col in historicos:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        df['Promedio_Historico'] = df[historicos].mean(axis=1, skipna=True).fillna(0)
+    else:
+        df['Promedio_Historico'] = 0
+        
     # Renombrar columnas de valores mensuales para facilitar uso
     meses_valor = {
         'Ene2': 'Valor_Ene', 'Feb3': 'Valor_Feb', 'Mar4': 'Valor_Mar',
@@ -178,37 +212,21 @@ def load_data(file_path=None):
     existing_valor_cols = [col for col in valor_cols if col in df.columns]
     df['Valor_Anual'] = df[existing_valor_cols].sum(axis=1)
     
+    # Agregar el código del proyecto al nombre del proyecto
+    if 'Codigo del Proyecto' in df.columns and 'Nombre del proyecto' in df.columns:
+        df['Nombre del proyecto'] = df['Nombre del proyecto'].astype(str) + " (" + df['Codigo del Proyecto'].astype(str) + ")"
+    
     return df
 
 # Sidebar con navegación
 with st.sidebar:
     st.markdown("""
-    <div style="text-align: center; padding: 20px 0;">
+    <div style="text-align: center; padding: 8px 0 12px 0;">
         <h2 style="color: white; margin: 0;">📊 Previsiones 2026</h2>
         <p style="color: #E9ECEF; font-size: 0.9rem;">Dashboard de Análisis</p>
     </div>
     """, unsafe_allow_html=True)
     
-    st.markdown("---")
-
-    # Carga de datos
-    st.markdown("### 📥 Cargar Datos")
-    uploaded_file = st.file_uploader(
-        "Sube tu archivo Excel de previsiones", 
-        type=['xlsx'],
-        help="El archivo debe tener la misma estructura que el de la plantilla."
-    )
-
-    if uploaded_file is not None:
-        # Si se sube un archivo, se usa ese.
-        # Se resetea el cache para asegurar que los datos se recarguen.
-        st.cache_data.clear()
-        df_principal = load_data(uploaded_file)
-        st.success("¡Archivo cargado con éxito!")
-    else:
-        # Si no, se usan los datos por defecto.
-        df_principal = load_data()
-
     st.markdown("---")
     
     # Menú de navegación
@@ -216,9 +234,9 @@ with st.sidebar:
     
     selected = option_menu(
         menu_title=None,
-        options=["Resumen Ejecutivo", "Previsión Mensual", "Previsión vs Real", 
+        options=["Resumen", "Previsión vs Real", 
                  "Simulador", "Saldos y Ajustes"],
-        icons=["house", "calendar", "graph-up-arrow", "sliders", "box-seam"],
+        icons=["house", "graph-up-arrow", "sliders", "box-seam"],
         menu_icon="cast",
         default_index=0,
         orientation="vertical",
@@ -241,10 +259,8 @@ with st.sidebar:
     # Filtros globales en sidebar
     st.markdown("### 🎛️ Filtros Globales")
     
-    # df_principal = pd.DataFrame() # DataFrame por defecto vacío
+    df_principal = load_data()
     try:
-        # df_principal = load_data()
-        
         # Filtro de Sección
         secciones = ['Todas'] + list(df_principal['Seccion'].dropna().unique())
         seccion_filter = st.selectbox("Sección", secciones, key="filter_seccion")
@@ -252,16 +268,26 @@ with st.sidebar:
         # Filtro de Área
         areas = ['Todas'] + list(df_principal['AREA'].dropna().unique())
         area_filter = st.selectbox("Área", areas, key="filter_area")
-        
-        # Filtro de Gestor
-        gestores = ['Todos'] + list(df_principal['Gestor Previsión'].dropna().unique())
-        gestor_filter = st.selectbox("Gestor", gestores, key="filter_gestor")
-        
+
     except Exception as e:
         st.error(f"Error cargando datos: {e}")
         seccion_filter = 'Todas'
         area_filter = 'Todas'
-        gestor_filter = 'Todos'
+
+    st.markdown("---")
+
+    # Carga de datos
+    st.markdown("### 📥 Cargar Datos")
+    uploaded_file = st.file_uploader(
+        "Sube tu archivo Excel de previsiones", 
+        type=['xlsx'],
+        help="El archivo debe tener la misma estructura que el de la plantilla."
+    )
+
+    if uploaded_file is not None:
+        st.cache_data.clear()
+        df_principal = load_data(uploaded_file)
+        st.success("¡Archivo cargado con éxito!")
 
 # Función para aplicar filtros
 def apply_filters(df):
@@ -274,20 +300,13 @@ def apply_filters(df):
     if st.session_state.get("filter_area") and st.session_state["filter_area"] != 'Todas':
         filtered_df = filtered_df[filtered_df['AREA'] == st.session_state["filter_area"]]
     
-    if st.session_state.get("filter_gestor") and st.session_state["filter_gestor"] != 'Todos':
-        filtered_df = filtered_df[filtered_df['Gestor Previsión'] == st.session_state["filter_gestor"]]
-    
     return filtered_df
 
 # Contenido según selección
 if not df_principal.empty:
-    if selected == "Resumen Ejecutivo":
+    if selected == "Resumen":
         from pages import resumen_ejecutivo
         resumen_ejecutivo.show(df_principal, apply_filters)
-        
-    elif selected == "Previsión Mensual":
-        from pages import prevision_mensual
-        prevision_mensual.show(df_principal, apply_filters)
         
     elif selected == "Previsión vs Real":
         from pages import prevision_vs_real

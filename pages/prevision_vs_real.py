@@ -6,26 +6,28 @@ Permite cargar un archivo de consumo real y comparar con la previsión
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+import numpy as np
 import sys
+
 sys.path.append('..')
+
+
+def _money_column():
+    return st.column_config.NumberColumn(format="S/ %.0f")
 
 
 def show(df, apply_filters):
     """Función principal de la página de Previsión vs Real"""
-    
+
     st.title("📊 Previsión vs Consumo Real")
     st.markdown("---")
-    
-    # Aplicar filtros
+
     df_filtered = apply_filters(df)
-    
     if df_filtered.empty:
         st.warning("No hay datos con los filtros seleccionados")
         return
-    
-    # Sección de carga de archivo de consumo real
+
     st.subheader("📁 Cargar Archivo de Consumo Real")
-    
     st.markdown("""
     <div style="background-color: #E9ECEF; padding: 15px; border-radius: 10px; margin-bottom: 20px;">
         <p style="margin: 0;"><strong>Formato esperado del archivo:</strong></p>
@@ -36,25 +38,22 @@ def show(df, apply_filters):
         </ul>
     </div>
     """, unsafe_allow_html=True)
-    
+
     uploaded_file = st.file_uploader(
         "Seleccionar archivo de consumo real:",
         type=['xlsx', 'csv'],
         help="Sube un archivo Excel o CSV con los datos de consumo real"
     )
-    
-    # Datos de ejemplo para demostración
     use_demo = st.checkbox("Usar datos de demostración (simular consumo)", value=False)
-    
+
     df_real = None
     df_comparison = df_filtered.copy()
     real_mode = None
     meses = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
-    meses_prev = ['Valor_Ene', 'Valor_Feb', 'Valor_Mar', 'Valor_Abr', 'Valor_May', 'Valor_Jun',
-                  'Valor_Jul', 'Valor_Ago', 'Valor_Sep', 'Valor_Oct', 'Valor_Nov', 'Valor_Dic']
+    meses_prev = [f'Valor_{m}' for m in meses]
     meses_real = [f'Real_{m}' for m in meses]
     df_real_material = pd.DataFrame(columns=['DESCRIPCION'] + meses_real)
-    
+
     if uploaded_file is not None:
         try:
             if uploaded_file.name.endswith('.csv'):
@@ -63,515 +62,240 @@ def show(df, apply_filters):
                 df_real = pd.read_excel(uploaded_file)
             st.success(f"✅ Archivo cargado: {uploaded_file.name}")
             st.write(f"Filas: {len(df_real)}, Columnas: {len(df_real.columns)}")
-            
             with st.expander("Vista previa del archivo cargado"):
-                st.dataframe(df_real.head(10), use_container_width=True)
+                st.dataframe(df_real.head(10), use_container_width=True, hide_index=True)
         except Exception as e:
             st.error(f"Error al cargar el archivo: {e}")
-    
+            return
     elif use_demo:
         st.info("📊 Usando datos de demostración simulados")
-        
-        import numpy as np
         np.random.seed(42)
-
         for mes, mes_prev in zip(meses, meses_prev):
             if mes_prev in df_filtered.columns:
-                factor = np.random.uniform(0.7, 1.1, len(df_filtered))
-                df_comparison[f'Real_{mes}'] = df_filtered[mes_prev] * factor
+                df_comparison[f'Real_{mes}'] = df_filtered[mes_prev] * np.random.uniform(0.7, 1.1, len(df_filtered))
             else:
                 df_comparison[f'Real_{mes}'] = 0
-
         df_real_material = df_comparison.groupby('DESCRIPCION', dropna=False)[meses_real].sum().reset_index()
         real_mode = 'row'
         st.success("✅ Datos de demostración generados correctamente")
-    
+
     st.markdown("---")
-    
-    # If there are real data (loaded or simulated), show comparisons
-    if use_demo or df_real is not None:
-        if df_real is not None and not use_demo:
-            id_cols = ['Matricula', 'Matrícula', 'DESCRIPCION']
-            real_id_col = next((col for col in id_cols if col in df_real.columns), None)
+    if not (use_demo or df_real is not None):
+        st.info("👉 Carga un archivo de consumo real o activa los datos de demostración para ver las comparaciones.")
+        return
 
-            if real_id_col is None:
-                st.error("No se encontró una columna de identificación de material (Matricula, Matrícula o DESCRIPCION) en el archivo de consumo real.")
-                return
+    if df_real is not None and not use_demo:
+        id_cols = ['Matricula', 'Matrícula', 'DESCRIPCION']
+        real_id_col = next((col for col in id_cols if col in df_real.columns), None)
+        if real_id_col is None:
+            st.error("No se encontró una columna de identificación de material (Matricula, Matrícula o DESCRIPCION) en el archivo de consumo real.")
+            return
 
-            # Identify monthly columns in df_real
-            meses_upload = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
-            real_month_cols = [col for col in meses_upload if col in df_real.columns]
+        if 'Matricula_Clean' in df_comparison.columns and real_id_col in ['Matricula', 'Matrícula']:
+            mat_to_desc = dict(zip(df_comparison['Matricula_Clean'], df_comparison['DESCRIPCION']))
+            df_real[real_id_col] = (
+                df_real[real_id_col]
+                .astype(str)
+                .str.strip()
+                .replace(r'\.0$', '', regex=True)
+                .map(mat_to_desc)
+                .fillna(df_real[real_id_col].astype(str))
+            )
 
-            if not real_month_cols:
-                st.error("No se encontraron columnas mensuales (Ene, Feb, Mar, etc.) en el archivo de consumo real.")
-                return
+        real_month_cols = [col for col in meses if col in df_real.columns]
+        if not real_month_cols:
+            st.error("No se encontraron columnas mensuales (Ene, Feb, Mar, etc.) en el archivo de consumo real.")
+            return
 
-            df_real_processed = df_real[[real_id_col] + real_month_cols].copy()
-            df_real_processed = df_real_processed.melt(id_vars=[real_id_col], var_name='Mes_Abbr', value_name='Real_Value')
-            df_real_processed['Real_Mes'] = 'Real_' + df_real_processed['Mes_Abbr']
+        df_real_processed = df_real[[real_id_col] + real_month_cols].copy()
+        df_real_processed = df_real_processed.melt(id_vars=[real_id_col], var_name='Mes_Abbr', value_name='Real_Value')
+        df_real_processed['Real_Mes'] = 'Real_' + df_real_processed['Mes_Abbr']
+        df_real_material = df_real_processed.pivot_table(
+            index=real_id_col,
+            columns='Real_Mes',
+            values='Real_Value',
+            aggfunc='sum',
+            fill_value=0
+        ).reset_index().rename(columns={real_id_col: 'DESCRIPCION'})
 
-            df_real_material = df_real_processed.pivot_table(
-                index=real_id_col,
-                columns='Real_Mes',
-                values='Real_Value',
-                aggfunc='sum',
-                fill_value=0
-            ).reset_index().rename(columns={real_id_col: 'DESCRIPCION'})
+        for col in meses_real:
+            if col not in df_real_material.columns:
+                df_real_material[col] = 0
+        real_mode = 'material'
 
-            for col in meses_real:
-                if col not in df_real_material.columns:
-                    df_real_material[col] = 0
+    prevision_mensual = []
+    real_mensual = []
+    for mes_p, mes_r in zip(meses_prev, meses_real):
+        prevision_mensual.append(df_comparison[mes_p].sum() if mes_p in df_comparison.columns else 0)
+        real_mensual.append(df_real_material[mes_r].sum() if mes_r in df_real_material.columns else 0)
 
-            real_mode = 'material'
+    total_prev = sum(prevision_mensual)
+    total_real = sum(real_mensual)
+    ejecucion = (total_real / total_prev * 100) if total_prev > 0 else 0
+    desv_acumulada = []
+    acum_prev = 0
+    acum_real = 0
+    for prev, real in zip(prevision_mensual, real_mensual):
+        acum_prev += prev
+        acum_real += real
+        desv_acumulada.append(acum_real - acum_prev)
 
-        prevision_mensual = []
-        real_mensual = []
-        
-        for mes, mes_p, mes_r in zip(meses, meses_prev, meses_real):
-            prev_val = df_comparison[mes_p].sum() if mes_p in df_comparison.columns else 0
-            real_val = df_real_material[mes_r].sum() if mes_r in df_real_material.columns else 0
-            prevision_mensual.append(prev_val)
-            real_mensual.append(real_val)
-        
-        # Gráfico comparativo mensual
+    tab_resumen, tab_detalle, tab_tabla = st.tabs(["Resumen Ejecutivo", "Análisis Detallado", "Tabla de Cumplimiento"])
+
+    with tab_resumen:
         st.subheader("📈 Comparativo Mensual: Previsión vs Real")
-        
         fig_comp = go.Figure()
-        
-        fig_comp.add_trace(go.Bar(
-            name='Previsión',
-            x=meses,
-            y=prevision_mensual,
-            marker_color='#2C539E',
-            text=[f'{v:,.0f}' for v in prevision_mensual],
-            textposition='outside',
-            textfont=dict(size=9)
-        ))
-        
-        fig_comp.add_trace(go.Bar(
-            name='Real',
-            x=meses,
-            y=real_mensual,
-            marker_color='#FFBE00',
-            text=[f'{v:,.0f}' for v in real_mensual],
-            textposition='outside',
-            textfont=dict(size=9)
-        ))
-        
+        fig_comp.add_trace(go.Bar(name='Previsión', x=meses, y=prevision_mensual, marker_color='#2C539E'))
+        fig_comp.add_trace(go.Bar(name='Real', x=meses, y=real_mensual, marker_color='#FFBE00'))
         fig_comp.update_layout(
             barmode='group',
             xaxis_title='Mes',
             yaxis_title='Valor (MS/.)',
             margin=dict(t=50, b=50, l=60, r=20),
-            height=450,
+            height=420,
             legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)
         )
-        
         st.plotly_chart(fig_comp, use_container_width=True)
-        
-        # Métricas de ejecución
+
         st.subheader("📊 Métricas de Ejecución")
-        
-        total_prev = sum(prevision_mensual)
-        total_real = sum(real_mensual)
-        ejecucion = (total_real / total_prev * 100) if total_prev > 0 else 0
-        
         col1, col2, col3, col4 = st.columns(4)
-        
         with col1:
             st.metric("Previsión Total", f"S/ {total_prev:,.0f}")
         with col2:
             st.metric("Ejecución Real", f"S/ {total_real:,.0f}")
         with col3:
-            delta = total_real - total_prev
-            st.metric("Diferencia", f"S/ {delta:,.0f}", delta=f"{delta:,.0f}")
+            st.metric("Diferencia", f"S/ {total_real - total_prev:,.0f}", delta=f"{total_real - total_prev:,.0f}")
         with col4:
             st.metric("% Ejecución", f"{ejecucion:.1f}%")
-        
-        st.markdown("---")
-        
-        # Gauge de ejecución
-        col1, col2 = st.columns([1, 2])
-        
-        with col1:
-            st.subheader("🎯 Nivel de Ejecución")
-            
-            fig_gauge = go.Figure(go.Indicator(
-                mode="gauge+number",
-                value=ejecucion,
-                title={'text': "% de Ejecución", 'font': {'size': 16, 'color': '#2C539E'}},
-                gauge={
-                    'axis': {'range': [None, 120], 'ticksuffix': '%'},
-                    'bar': {'color': '#2C539E'},
-                    'steps': [
-                        {'range': [0, 50], 'color': '#A4B6D4'},
-                        {'range': [50, 80], 'color': '#FFBE00'},
-                        {'range': [80, 100], 'color': '#64AA5A'}
-                    ],
-                    'threshold': {
-                        'line': {'color': '#FFBE00', 'width': 4},
-                        'thickness': 0.75,
-                        'value': 100
-                    }
-                }
-            ))
-            
-            fig_gauge.update_layout(height=300, margin=dict(t=30, b=20, l=20, r=20))
-            st.plotly_chart(fig_gauge, use_container_width=True)
-        
-        with col2:
-            st.subheader("📉 Desviación Acumulada")
-            
-            # Calcular desviación acumulada
-            desv_acumulada = []
-            acum_prev = 0
-            acum_real = 0
-            
-            for p, r in zip(prevision_mensual, real_mensual):
-                acum_prev += p
-                acum_real += r
-                desv_acumulada.append(acum_real - acum_prev)
-            
-            fig_desv = go.Figure()
-            
-            fig_desv.add_trace(go.Scatter(
-                x=meses,
-                y=desv_acumulada,
-                mode='lines+markers',
-                name='Desviación Acumulada',
-                line=dict(color='#FFBE00', width=3),
-                marker=dict(size=10),
-                fill='tozeroy',
-                fillcolor='rgba(255, 190, 0, 0.2)'
-            ))
-            
-            fig_desv.add_hline(y=0, line_dash="dash", line_color="gray")
-            
-            fig_desv.update_layout(
-                xaxis_title='Mes',
-                yaxis_title='Desviación (MS/.)',
-                margin=dict(t=30, b=30, l=60, r=20),
-                height=300,
-                showlegend=False
-            )
-            
-            st.plotly_chart(fig_desv, use_container_width=True)
-        
-        st.markdown("---")
 
-        # ============================================
-        # NUEVA SECCIÓN: ANÁLISIS POR PROYECTO O MATERIAL
-        # ============================================
+        st.subheader("📉 Desviación Acumulada")
+        fig_desv = go.Figure()
+        fig_desv.add_trace(go.Scatter(
+            x=meses,
+            y=desv_acumulada,
+            mode='lines+markers',
+            line=dict(color='#E94F37', width=3),
+            marker=dict(size=8),
+            fill='tozeroy',
+            fillcolor='rgba(233, 79, 55, 0.15)'
+        ))
+        fig_desv.add_hline(y=0, line_dash="dash", line_color="gray")
+        fig_desv.update_layout(
+            xaxis_title='Mes',
+            yaxis_title='Desviación (MS/.)',
+            margin=dict(t=30, b=30, l=60, r=20),
+            height=280,
+            showlegend=False
+        )
+        st.plotly_chart(fig_desv, use_container_width=True)
+
+    with tab_detalle:
         st.subheader("🔍 Análisis Detallado por Proyecto o Material")
-        
         analysis_options = ["Material"] if real_mode == 'material' else ["Proyecto", "Material"]
         tipo_analisis = st.radio("Analizar por:", analysis_options, horizontal=True)
 
-        if real_mode == 'material':
-            st.info(
-                "El archivo cargado solo trae consumo real por material. "
-                "Por eso el análisis detallado se limita a materiales y el detalle por proyecto muestra solo previsión total."
-            )
-        
-        # Colores corporativos
-        COLOR_VERDE = "#64AA5A"
-        COLOR_AMARILLO = "#FFBE00"
-        COLOR_AZUL_OSCURO = "#2C539E"
-        COLOR_AZUL_CLARO = "#A4B6D4"
-        COLOR_BLANCO = "#FBFBFB"
-        
-        if tipo_analisis == "Proyecto":
-            # Análisis por proyecto
-            proyectos_unicos = df_comparison['Nombre del proyecto'].unique()
-            proyecto_select = st.selectbox(
-                "Seleccionar Proyecto:",
-                proyectos_unicos,
-                key="proyecto_vs_real"
-            )
-            
-            # Filtrar datos del proyecto from df_comparison
+        if tipo_analisis == "Proyecto" and real_mode != 'material':
+            proyecto_select = st.selectbox("Seleccionar Proyecto:", df_comparison['Nombre del proyecto'].unique(), key="proyecto_vs_real")
             df_proy = df_comparison[df_comparison['Nombre del proyecto'] == proyecto_select]
-            
-            # Calcular totales mensuales del proyecto
-            prev_proy = []
-            real_proy = []
-            
-            for mes_p, mes_r in zip(meses_prev, meses_real):
-                prev_proy.append(df_proy[mes_p].sum() if mes_p in df_proy.columns else 0)
-                real_proy.append(df_proy[mes_r].sum() if mes_r in df_proy.columns else 0)
-            
-            # KPIs del proyecto
-            total_prev_proy = sum(prev_proy)
-            total_real_proy = sum(real_proy)
-            ejec_proy = (total_real_proy / total_prev_proy * 100) if total_prev_proy > 0 else 0
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.markdown(f"""
-                <div style="background-color: {COLOR_AZUL_OSCURO}; border-radius: 10px; padding: 15px; text-align: center;">
-                    <div style="color: {COLOR_BLANCO}; font-size: 0.85rem; opacity: 0.9;">Previsión Proyecto</div>
-                    <div style="color: {COLOR_BLANCO}; font-size: 1.2rem; font-weight: bold; margin-top: 5px;">S/ {total_prev_proy:,.0f}</div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            with col2:
-                st.markdown(f"""
-                <div style="background-color: {COLOR_VERDE}; border-radius: 10px; padding: 15px; text-align: center;">
-                    <div style="color: {COLOR_BLANCO}; font-size: 0.85rem; opacity: 0.9;">Real Proyecto</div>
-                    <div style="color: {COLOR_BLANCO}; font-size: 1.2rem; font-weight: bold; margin-top: 5px;">S/ {total_real_proy:,.0f}</div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            with col3:
-                # Color según ejecución
-                color_ejec = COLOR_VERDE if ejec_proy >= 90 else COLOR_AMARILLO
-                st.markdown(f"""
-                <div style="background-color: {color_ejec}; border-radius: 10px; padding: 15px; text-align: center;">
-                    <div style="color: {COLOR_AZUL_OSCURO}; font-size: 0.85rem; opacity: 0.9;">% Ejecución</div>
-                    <div style="color: {COLOR_AZUL_OSCURO}; font-size: 1.2rem; font-weight: bold; margin-top: 5px;">{ejec_proy:.1f}%</div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            with col4:
-                n_materiales = df_proy['DESCRIPCION'].nunique()
-                st.markdown(f"""
-                <div style="background-color: {COLOR_AZUL_CLARO}; border-radius: 10px; padding: 15px; text-align: center;">
-                    <div style="color: {COLOR_AZUL_OSCURO}; font-size: 0.85rem; opacity: 0.9;">Materiales</div>
-                    <div style="color: {COLOR_AZUL_OSCURO}; font-size: 1.2rem; font-weight: bold; margin-top: 5px;">{n_materiales}</div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            # Gráfico comparativo del proyecto
+            prev_proy = [df_proy[c].sum() if c in df_proy.columns else 0 for c in meses_prev]
+            real_proy = [df_proy[c].sum() if c in df_proy.columns else 0 for c in meses_real]
+
             fig_proy = go.Figure()
-            
-            fig_proy.add_trace(go.Bar(
-                name='Previsión',
-                x=meses,
-                y=prev_proy,
-                marker_color=COLOR_AZUL_OSCURO,
-                text=[f'{v:,.0f}' if v > 0 else '' for v in prev_proy],
-                textposition='outside',
-                textfont=dict(size=9, color=COLOR_AZUL_OSCURO)
-            ))
-            
-            fig_proy.add_trace(go.Bar(
-                name='Real',
-                x=meses,
-                y=real_proy,
-                marker_color=COLOR_VERDE,
-                text=[f'{v:,.0f}' if v > 0 else '' for v in real_proy],
-                textposition='outside',
-                textfont=dict(size=9, color=COLOR_VERDE)
-            ))
-            
+            fig_proy.add_trace(go.Bar(name='Previsión', x=meses, y=prev_proy, marker_color='#2C539E'))
+            fig_proy.add_trace(go.Bar(name='Real', x=meses, y=real_proy, marker_color='#64AA5A'))
             fig_proy.update_layout(
-                title=dict(text=f'Previsión vs Real - {proyecto_select[:50]}', 
-                          x=0.5, font=dict(size=12, color=COLOR_AZUL_OSCURO)),
                 barmode='group',
                 xaxis_title='Mes',
                 yaxis_title='Valor (MS/.)',
-                height=400,
-                margin=dict(t=60, b=50, l=60, r=20),
-                legend=dict(orientation="h", y=-0.2, x=0.5, xanchor="center"),
-                paper_bgcolor=COLOR_BLANCO,
-                plot_bgcolor=COLOR_BLANCO
+                height=380,
+                margin=dict(t=40, b=40, l=60, r=20)
             )
-            
             st.plotly_chart(fig_proy, use_container_width=True)
-            
-            # Top materiales del proyecto con mayor desviación
-            st.markdown("#### 📦 Materiales con Mayor Desviación")
-            
-            mat_proy = df_proy.groupby('DESCRIPCION', dropna=False).agg({ # Added dropna=False for consistency
-                'Valor materiales (MS/.)': 'sum',
+
+            mat_proy = df_proy.groupby('DESCRIPCION', dropna=False).agg({
                 **{mes_p: 'sum' for mes_p in meses_prev if mes_p in df_proy.columns},
                 **{mes_r: 'sum' for mes_r in meses_real if mes_r in df_proy.columns}
             }).reset_index()
-            
-            mat_proy['Total_Prev'] = mat_proy[[m for m in meses_prev if m in mat_proy.columns]].sum(axis=1)
-            mat_proy['Total_Real'] = mat_proy[[m for m in meses_real if m in mat_proy.columns]].sum(axis=1)
-            mat_proy['Desviacion'] = mat_proy['Total_Real'] - mat_proy['Total_Prev']
-            mat_proy['Pct_Cumpl'] = (mat_proy['Total_Real'] / mat_proy['Total_Prev'] * 100).fillna(0)
-            
-            # Mostrar top por desviación absoluta
-            mat_proy['Desv_Abs'] = mat_proy['Desviacion'].abs()
-            mat_proy = mat_proy.sort_values('Desv_Abs', ascending=False).head(10)
-            
-            tabla_mat = mat_proy[['DESCRIPCION', 'Total_Prev', 'Total_Real', 'Desviacion', 'Pct_Cumpl']].copy()
+            mat_proy['Previsión'] = mat_proy[[m for m in meses_prev if m in mat_proy.columns]].sum(axis=1)
+            mat_proy['Real'] = mat_proy[[m for m in meses_real if m in mat_proy.columns]].sum(axis=1)
+            mat_proy['Desviación'] = mat_proy['Real'] - mat_proy['Previsión']
+            mat_proy['% Cumpl.'] = np.where(mat_proy['Previsión'] > 0, (mat_proy['Real'] / mat_proy['Previsión']) * 100, np.nan)
+            tabla_mat = mat_proy[['DESCRIPCION', 'Previsión', 'Real', 'Desviación', '% Cumpl.']].sort_values('Desviación', key=np.abs, ascending=False).head(10).copy()
             tabla_mat.columns = ['Material', 'Previsión', 'Real', 'Desviación', '% Cumpl.']
-            tabla_mat['Previsión'] = tabla_mat['Previsión'].apply(lambda x: f"S/ {x:,.0f}")
-            tabla_mat['Real'] = tabla_mat['Real'].apply(lambda x: f"S/ {x:,.0f}")
-            tabla_mat['Desviación'] = tabla_mat['Desviación'].apply(lambda x: f"S/ {x:,.0f}")
-            tabla_mat['% Cumpl.'] = tabla_mat['% Cumpl.'].apply(lambda x: f"{x:.1f}%")
             tabla_mat['Material'] = tabla_mat['Material'].str[:45]
-            
-            st.dataframe(tabla_mat, use_container_width=True, hide_index=True)
-        
-        else:
-            # Análisis por material
-            materiales_unicos = df_comparison['DESCRIPCION'].dropna().unique()
-            material_select = st.selectbox(
-                "Seleccionar Material:",
-                materiales_unicos,
-                key="material_vs_real"
+            st.dataframe(
+                tabla_mat,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'Previsión': _money_column(),
+                    'Real': _money_column(),
+                    'Desviación': _money_column(),
+                    '% Cumpl.': st.column_config.NumberColumn(format="%.1f%%")
+                }
             )
-            
+        else:
+            material_select = st.selectbox("Seleccionar Material:", df_comparison['DESCRIPCION'].dropna().unique(), key="material_vs_real")
             df_mat = df_comparison[df_comparison['DESCRIPCION'] == material_select]
             df_mat_real = df_real_material[df_real_material['DESCRIPCION'] == material_select]
-            
-            # Info del material
-            unidad = df_mat['UNIDAD'].iloc[0] if 'UNIDAD' in df_mat.columns and len(df_mat) > 0 else 'N/A'
-            precio_unit = df_mat['P.U. s/.'].iloc[0] if 'P.U. s/.' in df_mat.columns and len(df_mat) > 0 else 0
-            proyectos_involucrados = df_mat['Nombre del proyecto'].unique()
-            
-            st.markdown(f"**Unidad:** {unidad} | **Precio Unitario:** S/ {precio_unit:,.2f}")
-            st.markdown(f"**Usado en {len(proyectos_involucrados)} proyecto(s)**")
-            
-            # Calcular totales mensuales del material
-            prev_mat = []
-            real_mat = []
-            
-            for mes_p, mes_r in zip(meses_prev, meses_real):
-                prev_mat.append(df_mat[mes_p].sum() if mes_p in df_mat.columns else 0)
-                real_mat.append(df_mat_real[mes_r].sum() if mes_r in df_mat_real.columns else 0)
-            
-            # KPIs del material
-            total_prev_mat = sum(prev_mat)
-            total_real_mat = sum(real_mat)
-            ejec_mat = (total_real_mat / total_prev_mat * 100) if total_prev_mat > 0 else 0
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.markdown(f"""
-                <div style="background-color: {COLOR_AZUL_OSCURO}; border-radius: 10px; padding: 15px; text-align: center;">
-                    <div style="color: {COLOR_BLANCO}; font-size: 0.85rem; opacity: 0.9;">Previsión Total</div>
-                    <div style="color: {COLOR_BLANCO}; font-size: 1.2rem; font-weight: bold; margin-top: 5px;">S/ {total_prev_mat:,.0f}</div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            with col2:
-                st.markdown(f"""
-                <div style="background-color: {COLOR_VERDE}; border-radius: 10px; padding: 15px; text-align: center;">
-                    <div style="color: {COLOR_BLANCO}; font-size: 0.85rem; opacity: 0.9;">Real Total</div>
-                    <div style="color: {COLOR_BLANCO}; font-size: 1.2rem; font-weight: bold; margin-top: 5px;">S/ {total_real_mat:,.0f}</div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            with col3:
-                color_ejec = COLOR_VERDE if ejec_mat >= 90 else COLOR_AMARILLO
-                st.markdown(f"""
-                <div style="background-color: {color_ejec}; border-radius: 10px; padding: 15px; text-align: center;">
-                    <div style="color: {COLOR_AZUL_OSCURO}; font-size: 0.85rem; opacity: 0.9;">% Ejecución</div>
-                    <div style="color: {COLOR_AZUL_OSCURO}; font-size: 1.2rem; font-weight: bold; margin-top: 5px;">{ejec_mat:.1f}%</div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            # Gráfico comparativo del material
+
+            prev_mat = [df_mat[c].sum() if c in df_mat.columns else 0 for c in meses_prev]
+            real_mat = [df_mat_real[c].sum() if c in df_mat_real.columns else 0 for c in meses_real]
             fig_mat = go.Figure()
-            
-            fig_mat.add_trace(go.Bar(
-                name='Previsión',
-                x=meses,
-                y=prev_mat,
-                marker_color=COLOR_AZUL_OSCURO
-            ))
-            
-            fig_mat.add_trace(go.Bar(
-                name='Real',
-                x=meses,
-                y=real_mat,
-                marker_color=COLOR_VERDE
-            ))
-            
+            fig_mat.add_trace(go.Bar(name='Previsión', x=meses, y=prev_mat, marker_color='#2C539E'))
+            fig_mat.add_trace(go.Bar(name='Real', x=meses, y=real_mat, marker_color='#64AA5A'))
             fig_mat.update_layout(
-                title=dict(text='Previsión vs Real - Material Seleccionado', 
-                          x=0.5, font=dict(size=12, color=COLOR_AZUL_OSCURO)),
                 barmode='group',
                 xaxis_title='Mes',
                 yaxis_title='Valor (MS/.)',
                 height=350,
-                margin=dict(t=50, b=50, l=60, r=20),
-                legend=dict(orientation="h", y=-0.25, x=0.5, xanchor="center"),
-                paper_bgcolor=COLOR_BLANCO,
-                plot_bgcolor=COLOR_BLANCO
+                margin=dict(t=40, b=40, l=60, r=20)
             )
-            
             st.plotly_chart(fig_mat, use_container_width=True)
-            
-            # Proyectos donde se usa este material
-            st.markdown("#### 📋 Uso del Material por Proyecto")
-            
+
             uso_proy = df_mat.groupby('Nombre del proyecto').agg({
                 'Total/Cantidad': 'sum',
-                'Valor materiales (MS/.)': 'sum',
                 **{m: 'sum' for m in meses_prev if m in df_mat.columns}
             }).reset_index()
-            
-            uso_proy['Total_Prev'] = uso_proy[[m for m in meses_prev if m in uso_proy.columns]].sum(axis=1)
-            if real_mode == 'row':
-                uso_proy['Total_Real'] = uso_proy[[m for m in meses_real if m in uso_proy.columns]].sum(axis=1)
-            else:
-                uso_proy['Total_Real'] = pd.NA
-            
-            tabla_uso = uso_proy[['Nombre del proyecto', 'Total/Cantidad', 'Total_Prev', 'Total_Real']].copy()
+            uso_proy['Previsión'] = uso_proy[[m for m in meses_prev if m in uso_proy.columns]].sum(axis=1)
+            uso_proy['Real'] = np.nan
+            tabla_uso = uso_proy[['Nombre del proyecto', 'Total/Cantidad', 'Previsión', 'Real']].copy()
             tabla_uso.columns = ['Proyecto', 'Cantidad', 'Previsión', 'Real']
-            tabla_uso['Cantidad'] = tabla_uso['Cantidad'].apply(lambda x: f"{x:,.0f}")
-            tabla_uso['Previsión'] = tabla_uso['Previsión'].apply(lambda x: f"S/ {x:,.0f}")
-            tabla_uso['Real'] = tabla_uso['Real'].apply(lambda x: f"S/ {x:,.0f}" if pd.notna(x) else "No disponible")
             tabla_uso['Proyecto'] = tabla_uso['Proyecto'].str[:50]
-            
-            st.dataframe(tabla_uso, use_container_width=True, hide_index=True)
-        
-        st.markdown("---")
-        
-        # Tabla de detalle
-        st.subheader("📋 Detalle de Cumplimiento")
-        
-        detalle_data = []
-        detalle_base = df_comparison.groupby('Nombre del proyecto', dropna=False).sum(numeric_only=True).reset_index()
+            st.dataframe(
+                tabla_uso,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'Cantidad': st.column_config.NumberColumn(format="%.0f"),
+                    'Previsión': _money_column(),
+                    'Real': _money_column()
+                }
+            )
 
+    with tab_tabla:
+        st.subheader("📋 Detalle de Cumplimiento")
+        detalle_base = df_comparison.groupby('Nombre del proyecto', dropna=False).sum(numeric_only=True).reset_index()
+        detalle_rows = []
         for _, row in detalle_base.iterrows():
-            proyecto = row['Nombre del proyecto']
-            total_prev = row[[mp for mp in meses_prev if mp in row]].sum()
-            total_real = row[[mr for mr in meses_real if mr in row]].sum() if real_mode == 'row' else None
-            cumplimiento = (total_real / total_prev * 100) if total_real is not None and total_prev > 0 else None
-            
-            detalle_data.append({
-                'Proyecto': proyecto,
-                'Previsión Total': total_prev,
-                'Real Total': total_real,
-                'Diferencia': (total_real - total_prev) if total_real is not None else None,
-                '% Cumplimiento': cumplimiento
+            total_prev_proyecto = row[[m for m in meses_prev if m in row]].sum()
+            total_real_proyecto = row[[m for m in meses_real if m in row]].sum() if real_mode == 'row' else np.nan
+            detalle_rows.append({
+                'Proyecto': row['Nombre del proyecto'],
+                'Previsión Total': total_prev_proyecto,
+                'Real Total': total_real_proyecto,
+                'Diferencia': total_real_proyecto - total_prev_proyecto if pd.notna(total_real_proyecto) else np.nan,
+                '% Cumplimiento': (total_real_proyecto / total_prev_proyecto * 100) if pd.notna(total_real_proyecto) and total_prev_proyecto > 0 else np.nan
             })
-        
-        df_detalle = pd.DataFrame(detalle_data)
-        df_detalle = df_detalle.sort_values('Previsión Total', ascending=False)
-        
-        # Formatear
-        df_detalle['Previsión Total'] = df_detalle['Previsión Total'].apply(lambda x: f"S/ {x:,.0f}")
-        df_detalle['Real Total'] = df_detalle['Real Total'].apply(lambda x: f"S/ {x:,.0f}" if pd.notna(x) else "No disponible")
-        df_detalle['Diferencia'] = df_detalle['Diferencia'].apply(lambda x: f"S/ {x:,.0f}" if pd.notna(x) else "No disponible")
-        df_detalle['% Cumplimiento'] = df_detalle['% Cumplimiento'].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "No disponible")
-        
-        st.dataframe(df_detalle, use_container_width=True, hide_index=True)
-    
-    else:
-        # Mostrar instrucciones si no hay datos
-        st.info("👆 Carga un archivo de consumo real o activa los datos de demostración para ver las comparaciones.")
-        
-        st.markdown("""
-        ### 📋 Instrucciones para el archivo de consumo real:
-        
-        El archivo debe contener las siguientes columnas:
-        
-        | Columna | Descripción |
-        |---------|-------------|
-        | Matricula / Matrícula / DESCRIPCION | Identificador del material |
-        | Ene, Feb, Mar, ... | Valores de consumo mensual |
-        
-        **Formatos aceptados:** Excel (.xlsx) o CSV
-        
-        **Nota:** Los nombres de las columnas deben coincidir con los de la previsión para una correcta comparación.
-        """)
+        df_detalle = pd.DataFrame(detalle_rows).sort_values('Previsión Total', ascending=False)
+        st.dataframe(
+            df_detalle,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                'Previsión Total': _money_column(),
+                'Real Total': _money_column(),
+                'Diferencia': _money_column(),
+                '% Cumplimiento': st.column_config.NumberColumn(format="%.1f%%")
+            }
+        )

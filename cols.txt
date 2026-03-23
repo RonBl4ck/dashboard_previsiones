@@ -1,0 +1,59 @@
+Matricula
+obs
+LT. Covertura meses+stock+pdi+comp
+FechaDemanda
+Clasioficacion exist 02/2025
+Clasificación
+EETT
+Nueva familia
+Fecha
+GM
+GM1
+Nombre GM
+Sector OJO
+Sector (Técnica/ Comercial)
+Seccion
+Gestor Previsión
+Gestor Compra 
+Año
+Codigo del Proyecto
+Nombre del proyecto
+Cuenta G/I
+NO TOCAR MATERIAL
+Matrícula
+DESCRIPCION
+UNIDAD
+P.U. s/.
+Ene
+Feb
+Mar
+Abr
+May
+Jun
+Jul
+Ago
+Sep
+Oct
+Nov
+Dic
+Total/Cantidad
+Valor materiales (MS/.)
+Matricula Nueva
+Consumo 123
+Consumo 124
+Consumo 125
+Ene2
+Feb3
+Mar4
+Abr5
+May6
+Jun7
+Jul8
+Ago9
+Sep30
+Oct11
+Nov12
+Dic13
+Total/Cantidad14
+AREA
+Unnamed: 58

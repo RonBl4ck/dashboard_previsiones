@@ -9,9 +9,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import sys
 sys.path.append('..')
-from components.charts import (
-    create_line_chart, create_stacked_bar, create_heatmap, COLORS, PALETTE
-)
+from components.charts import COLORS, PALETTE
 
 
 def show(df, apply_filters):
@@ -80,7 +78,7 @@ def show(df, apply_filters):
         xaxis_title='Mes',
         yaxis_title=y_label,
         margin=dict(t=50, b=50, l=60, r=100),
-        height=450,
+        height=360,
         showlegend=False
     )
     
@@ -103,119 +101,54 @@ def show(df, apply_filters):
         st.metric("Mes Mínimo", f"{min_val:,.0f}")
     
     st.markdown("---")
-    
-    # Distribución por proyecto y mes - ÁREAS APILADAS
-    st.subheader("📊 Distribución Mensual por Proyecto")
-    
-    # Selector de proyectos
-    proyectos = df_filtered['Nombre del proyecto'].unique()
-    proyectos_select = st.multiselect(
-        "Seleccionar proyectos (máx 10 para mejor visualización):",
-        options=proyectos,
-        default=list(proyectos)[:6] if len(proyectos) > 6 else list(proyectos)
+
+    st.subheader("📚 Distribución Mensual por Proyecto")
+    proyectos_agg = df_filtered.groupby('Nombre del proyecto').sum(numeric_only=True).reset_index()
+    proyectos_agg['Total'] = proyectos_agg[[c for c in meses_col if c in proyectos_agg.columns]].sum(axis=1)
+    proyectos_agg = proyectos_agg.sort_values('Total', ascending=False)
+
+    proyecto_focus = st.selectbox(
+        "Destacar proyecto",
+        ['Ninguno'] + proyectos_agg['Nombre del proyecto'].astype(str).tolist(),
+        key='focus_prevision_mensual_proyecto'
     )
-    
+
+    proyectos_select = st.multiselect(
+        "Seleccionar proyectos para comparar",
+        options=proyectos_agg['Nombre del proyecto'].tolist(),
+        default=proyectos_agg['Nombre del proyecto'].head(6).tolist()
+    )
+
     if proyectos_select:
-        df_proyectos = df_filtered[df_filtered['Nombre del proyecto'].isin(proyectos_select)]
-        
-        # Agregar datos por proyecto
-        agg_data = df_proyectos.groupby('Nombre del proyecto').sum(numeric_only=True).reset_index()
-        
-        # Colores corporativos
-        colors = PALETTE
-        
-        # Crear gráfico de áreas apiladas
-        fig2 = go.Figure()
-        
-        for i, (_, row) in enumerate(agg_data.iterrows()):
-            # Obtener valores mensuales
-            valores = []
-            for mes in meses:
-                col_name = f'{prefix}{mes}'
-                if col_name in agg_data.columns:
-                    valores.append(row[col_name])
-                else:
-                    valores.append(0)
-            
-            # Acortar nombre del proyecto si es muy largo
+        compare_df = proyectos_agg[proyectos_agg['Nombre del proyecto'].isin(proyectos_select)].copy()
+        fig_dist = go.Figure()
+        for i, (_, row) in enumerate(compare_df.iterrows()):
             proyecto_name = row['Nombre del proyecto']
-            if len(proyecto_name) > 35:
-                proyecto_name = proyecto_name[:35] + '...'
-            
-            fig2.add_trace(go.Scatter(
+            short_name = proyecto_name[:35] + '...' if len(proyecto_name) > 35 else proyecto_name
+            fig_dist.add_trace(go.Scatter(
+                name=short_name,
                 x=meses,
-                y=valores,
-                name=proyecto_name,
+                y=[row[col] if col in compare_df.columns else 0 for col in meses_col],
                 mode='lines',
-                stackgroup='one',  # Apilar áreas
-                line=dict(width=0.5, color=colors[i % len(colors)]),
-                fillcolor=colors[i % len(colors)],
-                hovertemplate='<b>%{fullData.name}</b><br>Mes: %{x}<br>Valor: %{y:,.0f}<extra></extra>'
+                stackgroup='one',
+                line=dict(
+                    width=1,
+                    color='#E94F37' if proyecto_name == proyecto_focus else PALETTE[i % len(PALETTE)]
+                ),
+                fillcolor='#E94F37' if proyecto_name == proyecto_focus else PALETTE[i % len(PALETTE)],
+                hovertemplate='<b>%{fullData.name}</b><br>Mes: %{x}<br>Valor: S/ %{y:,.0f}<extra></extra>'
             ))
-        
-        fig2.update_layout(
-            title=dict(
-                text='Evolución Acumulada por Proyecto',
-                x=0.5,
-                font=dict(size=14, color=COLORS['primary'])
-            ),
+
+        fig_dist.update_layout(
+            title=dict(text='Distribución Mensual por Proyecto', x=0.5, font=dict(size=14, color=COLORS['primary'])),
+            height=420,
+            margin=dict(t=40, b=20, l=20, r=20),
             xaxis_title='Mes',
-            yaxis_title=y_label,
-            margin=dict(t=60, b=50, l=60, r=20),
-            height=500,
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=-0.25,
-                xanchor="center",
-                x=0.5,
-                font=dict(size=10)
-            ),
-            hovermode='x unified',  # Muestra todos los valores al pasar mouse
-            xaxis=dict(
-                tickmode='array',
-                tickvals=meses,
-                ticktext=meses
-            )
+            yaxis_title='Valor (S/.)',
+            legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
+            hovermode='x unified'
         )
-        
-        # Añadir línea de promedio
-        valores_totales = []
-        for mes in meses:
-            col_name = f'{prefix}{mes}'
-            if col_name in agg_data.columns:
-                valores_totales.append(agg_data[col_name].sum())
-            else:
-                valores_totales.append(0)
-        
-        promedio = sum(valores_totales) / len(valores_totales) if valores_totales else 0
-        
-        fig2.add_hline(
-            y=promedio,
-            line_dash="dash",
-            line_color=COLORS['accent'],
-            opacity=0.7,
-            annotation_text=f"Promedio: {promedio:,.0f}",
-            annotation_position="right",
-            annotation_font=dict(size=10, color=COLORS['accent'])
-        )
-        
-        st.plotly_chart(fig2, use_container_width=True)
-        
-        # Mostrar resumen de proyectos seleccionados
-        with st.expander("📋 Ver resumen de proyectos seleccionados"):
-            resumen = agg_data[['Nombre del proyecto']].copy()
-            resumen['Total'] = resumen['Nombre del proyecto'].apply(
-                lambda x: sum([df_proyectos[df_proyectos['Nombre del proyecto'] == x][f'{prefix}{m}'].sum() 
-                              for m in meses if f'{prefix}{m}' in df_proyectos.columns])
-            )
-            resumen = resumen.sort_values('Total', ascending=False)
-            resumen['Participación %'] = (resumen['Total'] / resumen['Total'].sum() * 100).round(1)
-            resumen['Total'] = resumen['Total'].apply(lambda x: f"S/ {x:,.0f}")
-            resumen['Participación %'] = resumen['Participación %'].apply(lambda x: f"{x}%")
-            resumen.columns = ['Proyecto', 'Total Anual', 'Participación']
-            
-            st.dataframe(resumen, use_container_width=True, hide_index=True)
+        st.plotly_chart(fig_dist, use_container_width=True)
     
     st.markdown("---")
         
@@ -236,12 +169,10 @@ def show(df, apply_filters):
     # Ordenar por total
     tabla_mensual = tabla_mensual.sort_values('Total', ascending=False)
     
-    # Formatear
-    for col in cols_numericas + ['Total']:
-        tabla_mensual[col] = tabla_mensual[col].apply(lambda x: f"{x:,.0f}")
-    
-    st.dataframe(
-        tabla_mensual,
-        use_container_width=True,
-        hide_index=True
-    )
+    with st.expander("📋 Ver detalle mensual completo"):
+        st.dataframe(
+            tabla_mensual,
+            use_container_width=True,
+            hide_index=True,
+            column_config={col: st.column_config.NumberColumn(format="%.0f") for col in cols_numericas + ['Total']}
+        )

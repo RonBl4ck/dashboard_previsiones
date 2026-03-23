@@ -74,27 +74,30 @@ def show(df, apply_filters):
 
         if ajuste_tipo == "Porcentual (%)":
             with col1:
-                # Slider de ajuste
-                ajuste_pct = st.slider(
+                # Slider de ajuste -> Ahora es input numérico
+                ajuste_pct = st.number_input(
                     "Variación del presupuesto (%):",
-                    min_value=-50,
-                    max_value=50,
-                    value=0,
-                    step=1,
-                    help="Desliza para aumentar o reducir el presupuesto total"
+                    min_value=-100.0,
+                    value=0.0,
+                    step=1.0,
+                    format="%.2f",
+                    help="Ingresa el porcentaje para aumentar o reducir el presupuesto total"
                 )
             nuevo_presupuesto = presupuesto_actual * (1 + ajuste_pct / 100)
         
         else: # Monto Fijo
             with col1:
-                ajuste_monto = st.number_input(
-                    "Aumento o Reducción del Presupuesto (S/.)",
-                    value=0,
-                    step=10000,
-                    help="Ingresa un monto para aumentar (positivo) o reducir (negativo) el presupuesto."
+                nuevo_presupuesto_input = st.number_input(
+                    "Nuevo Presupuesto Total (S/.)",
+                    value=float(presupuesto_actual),
+                    min_value=0.0,
+                    step=10000.0,
+                    format="%.2f",
+                    help="Ingresa el nuevo monto total esperado para el presupuesto."
                 )
-            nuevo_presupuesto = presupuesto_actual + ajuste_monto
+            nuevo_presupuesto = nuevo_presupuesto_input
             if presupuesto_actual > 0:
+                ajuste_monto = nuevo_presupuesto - presupuesto_actual
                 ajuste_pct = (ajuste_monto / presupuesto_actual) * 100
 
         with col2:
@@ -178,51 +181,34 @@ def show(df, apply_filters):
     with tab2:
         st.subheader("Ajuste Individual por Proyecto")
 
-        proyectos = df_filtered.groupby('Nombre del proyecto')['Valor materiales (MS/.)'].sum().sort_values(ascending=False)
+        proyectos = df_filtered.groupby('Nombre del proyecto')['Valor materiales (MS/.)'].sum().reset_index()
+        proyectos.columns = ['Proyecto', 'Presupuesto Original']
+        proyectos = proyectos.sort_values('Presupuesto Original', ascending=False)
+        proyectos['Presupuesto Simulado'] = proyectos['Presupuesto Original']
         
         st.markdown("""
-        Selecciona los proyectos que deseas ajustar. Los cambios se reflejarán 
-        en el presupuesto total.
+        Edita la columna **Presupuesto Simulado** para ajustar los proyectos. 
+        Los cambios se reflejarán en el presupuesto total y en el desglose de materiales.
         """)
-
-        proyectos_seleccionados = st.multiselect(
-            "Selecciona Proyectos para ajustar:",
-            options=proyectos.index.tolist(),
-            default=proyectos.head(3).index.tolist() # Sugerir los 3 primeros
+        
+        # Tabla editable
+        edited_proyectos = st.data_editor(
+            proyectos,
+            column_config={
+                "Proyecto": st.column_config.TextColumn("Proyecto", disabled=True),
+                "Presupuesto Original": st.column_config.NumberColumn("Presupuesto Original (S/.)", format="S/ %.2f", disabled=True),
+                "Presupuesto Simulado": st.column_config.NumberColumn("Presupuesto Simulado (S/.)", format="S/ %.0f", step=1000.0)
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="editor_proyectos"
         )
-
-        ajustes = {}
-        total_ajustes = 0
-
-        if proyectos_seleccionados:
-            st.markdown("### Ajuste de Presupuestos")
-            cols = st.columns(2)
-            
-            for i, proyecto in enumerate(proyectos_seleccionados):
-                col = cols[i % 2]
-                valor = proyectos[proyecto]
-                
-                with col:
-                    # Slider para cada proyecto
-                    nuevo_valor = st.number_input(
-                        f"{proyecto[:35]}...",
-                        min_value=0,
-                        max_value=int(valor * 3), # Aumentar rango de ajuste
-                        value=int(valor),
-                        step=10000,
-                        key=f"proyecto_{proyecto}"
-                    )
-                    
-                    ajustes[proyecto] = nuevo_valor
-                    
-                    # Mostrar diferencia
-                    diff = nuevo_valor - valor
-                    color = "green" if diff >= 0 else "red"
-                    st.markdown(f"<span style='color: {color};'>Diferencia: S/ {diff:,.0f}</span>", unsafe_allow_html=True)
-
-        # Calcular el nuevo total
-        proyectos_no_seleccionados_valor = proyectos[~proyectos.index.isin(proyectos_seleccionados)].sum()
-        total_nuevo = sum(ajustes.values()) + proyectos_no_seleccionados_valor
+        
+        # Calcular diferencias y proyectos modificados
+        edited_proyectos['Diferencia'] = edited_proyectos['Presupuesto Simulado'] - edited_proyectos['Presupuesto Original']
+        proyectos_modificados = edited_proyectos[edited_proyectos['Diferencia'] != 0].copy()
+        
+        total_nuevo = edited_proyectos['Presupuesto Simulado'].sum()
 
         st.markdown("---")
         
@@ -237,27 +223,23 @@ def show(df, apply_filters):
             diff_total = total_nuevo - presupuesto_actual
             st.metric("Diferencia Total", f"S/ {diff_total:,.0f}", delta=f"{diff_total/presupuesto_actual*100:+.1f}%" if presupuesto_actual > 0 else "N/A")
 
-        # Gráfico de donut comparativo
-        if proyectos_seleccionados:
+        if not proyectos_modificados.empty:
+            # Gráfico de donut comparativo
             col1, col2 = st.columns(2)
             
-            # Datos para los gráficos
-            labels_original = list(ajustes.keys())
-            values_original = [proyectos[p] for p in labels_original]
-
-            if proyectos_no_seleccionados_valor > 0:
-                labels_original.append("Otros Proyectos")
-                values_original.append(proyectos_no_seleccionados_valor)
-
-            values_simulado = list(ajustes.values())
-            if proyectos_no_seleccionados_valor > 0:
-                values_simulado.append(proyectos_no_seleccionados_valor)
-
+            # Limitar etiquetas para el pie chart a los modificados vs el resto
+            mod_names = proyectos_modificados['Proyecto'].tolist()
+            otros_original = edited_proyectos[~edited_proyectos['Proyecto'].isin(mod_names)]['Presupuesto Original'].sum()
+            otros_simulado = edited_proyectos[~edited_proyectos['Proyecto'].isin(mod_names)]['Presupuesto Simulado'].sum()
+            
+            labels_pie = mod_names + ["Otros Proyectos"] if otros_original > 0 else mod_names
+            values_orig_pie = proyectos_modificados['Presupuesto Original'].tolist() + ([otros_original] if otros_original > 0 else [])
+            values_sim_pie = proyectos_modificados['Presupuesto Simulado'].tolist() + ([otros_simulado] if otros_simulado > 0 else [])
 
             with col1:
                 fig1 = go.Figure(go.Pie(
-                    labels=[l[:30] for l in labels_original],
-                    values=values_original,
+                    labels=[l[:30] for l in labels_pie],
+                    values=values_orig_pie,
                     hole=0.5,
                     marker_colors=PALETTE
                 ))
@@ -266,29 +248,84 @@ def show(df, apply_filters):
             
             with col2:
                 fig2 = go.Figure(go.Pie(
-                    labels=[l[:30] for l in labels_original],
-                    values=values_simulado,
+                    labels=[l[:30] for l in labels_pie],
+                    values=values_sim_pie,
                     hole=0.5,
                     marker_colors=PALETTE
                 ))
                 fig2.update_layout(title="Distribución Simulada", height=400)
                 st.plotly_chart(fig2, use_container_width=True)
 
-            # Preparar datos para descarga
-            df_export = pd.DataFrame({
-                'Proyecto': proyectos.index,
-                'Valor Original': proyectos.values,
-                'Valor Simulado': [ajustes.get(p, proyectos[p]) for p in proyectos.index]
-            })
-            df_export['Diferencia'] = df_export['Valor Simulado'] - df_export['Valor Original']
-
-            st.download_button(
-                label="📥 Exportar Escenario",
-                data=to_excel(df_export),
-                file_name="simulacion_ajuste_por_proyecto.xlsx",
-                mime="application/vnd.ms-excel",
-                use_container_width=True
+            st.markdown("---")
+            st.subheader("📦 Impacto en Cantidad de Materiales (Proyectos Ajustados)")
+            
+            # Filtrar materiales afectados
+            df_afectados = df_filtered[df_filtered['Nombre del proyecto'].isin(mod_names)].copy()
+            
+            proyectos_modificados['Ratio Ajuste'] = proyectos_modificados['Presupuesto Simulado'] / proyectos_modificados['Presupuesto Original'].replace(0, 1)
+            ratio_dict = dict(zip(proyectos_modificados['Proyecto'], proyectos_modificados['Ratio Ajuste']))
+            
+            df_afectados['Ratio'] = df_afectados['Nombre del proyecto'].map(ratio_dict)
+            
+            # Asegurarse de que Total/Cantidad no tenga NaN
+            df_afectados['Total/Cantidad'] = df_afectados['Total/Cantidad'].fillna(0)
+            
+            materiales_agg = df_afectados.groupby(['Nombre del proyecto', 'DESCRIPCION']).agg({
+                'Total/Cantidad': 'sum',
+                'Cant_Ene': 'sum', 'Cant_Feb': 'sum', 'Cant_Mar': 'sum', 'Cant_Abr': 'sum', 
+                'Cant_May': 'sum', 'Cant_Jun': 'sum', 'Cant_Jul': 'sum', 'Cant_Ago': 'sum', 
+                'Cant_Sep': 'sum', 'Cant_Oct': 'sum', 'Cant_Nov': 'sum', 'Cant_Dic': 'sum',
+                'Ratio': 'first'
+            }).reset_index()
+            
+            materiales_agg['Cantidad Original'] = materiales_agg['Total/Cantidad']
+            materiales_agg['Cantidad Simulada'] = materiales_agg['Total/Cantidad'] * materiales_agg['Ratio']
+            materiales_agg['Diferencia Cantidad'] = materiales_agg['Cantidad Simulada'] - materiales_agg['Cantidad Original']
+            
+            meses_cant = ['Cant_Ene', 'Cant_Feb', 'Cant_Mar', 'Cant_Abr', 'Cant_May', 'Cant_Jun', 
+                         'Cant_Jul', 'Cant_Ago', 'Cant_Sep', 'Cant_Oct', 'Cant_Nov', 'Cant_Dic']
+                         
+            for mes in meses_cant:
+                materiales_agg[f'Sim_{mes}'] = materiales_agg[mes] * materiales_agg['Ratio']
+            
+            tabla_mostrar = materiales_agg[['Nombre del proyecto', 'DESCRIPCION', 'Cantidad Original', 'Cantidad Simulada', 'Diferencia Cantidad']].copy()
+            st.dataframe(
+                tabla_mostrar, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "Cantidad Original": st.column_config.NumberColumn(format="%.2f"),
+                    "Cantidad Simulada": st.column_config.NumberColumn(format="%.2f"),
+                    "Diferencia Cantidad": st.column_config.NumberColumn(format="%+.2f")
+                }
             )
+            
+            # Preparar exportación
+            cols_export = ['Nombre del proyecto', 'DESCRIPCION', 'Cantidad Original', 'Cantidad Simulada', 'Diferencia Cantidad']
+            for mes in meses_cant:
+                cols_export.extend([mes, f'Sim_{mes}'])
+                
+            df_export_materiales = materiales_agg[cols_export]
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button(
+                    label="📥 Exportar Ajustes por Proyecto",
+                    data=to_excel(edited_proyectos),
+                    file_name="simulacion_ajuste_proyectos.xlsx",
+                    mime="application/vnd.ms-excel",
+                    use_container_width=True
+                )
+            with col2:
+                st.download_button(
+                    label="📥 Exportar Evolución Materiales (Mes a Mes)",
+                    data=to_excel(df_export_materiales),
+                    file_name="simulacion_materiales_evolucion.xlsx",
+                    mime="application/vnd.ms-excel",
+                    use_container_width=True
+                )
+        else:
+            st.info("Modifica algún presupuesto simulado en la tabla superior para ver el impacto.")
     
     # ============================================
     # TAB 3: Redistribución de Presupuesto

@@ -91,7 +91,8 @@ def create_bar_chart(df, category_col, value_col, title, orientation='h', top_n=
     """Crea un gráfico de barras (horizontal o vertical)"""
     
     agg_data = df.groupby(category_col)[value_col].sum().reset_index()
-    agg_data = agg_data.sort_values(value_col, ascending=(orientation == 'h'))
+    # Para top N se priorizan siempre los valores más altos.
+    agg_data = agg_data.sort_values(value_col, ascending=False)
     
     if top_n:
         agg_data = agg_data.head(top_n)
