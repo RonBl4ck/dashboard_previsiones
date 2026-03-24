@@ -54,6 +54,13 @@ def show(df, apply_filters):
     meses_real = [f'Real_{m}' for m in meses]
     df_real_material = pd.DataFrame(columns=['DESCRIPCION'] + meses_real)
 
+    tipo_comparacion = st.radio("Métrica a comparar:", ["Valor Económico (S/.)", "Cantidad Física"], horizontal=True)
+    
+    if tipo_comparacion == "Cantidad Física":
+        meses_prev = [f'Cant_{m}' for m in meses]
+    else:
+        meses_prev = [f'Valor_{m}' for m in meses]
+
     if uploaded_file is not None:
         try:
             if uploaded_file.name.endswith('.csv'):
@@ -62,7 +69,7 @@ def show(df, apply_filters):
                 df_real = pd.read_excel(uploaded_file)
             st.success(f"✅ Archivo cargado: {uploaded_file.name}")
             st.write(f"Filas: {len(df_real)}, Columnas: {len(df_real.columns)}")
-            with st.expander("Vista previa del archivo cargado"):
+            with st.expander("Vista previa del archivo original"):
                 st.dataframe(df_real.head(10), use_container_width=True, hide_index=True)
         except Exception as e:
             st.error(f"Error al cargar el archivo: {e}")
@@ -85,6 +92,40 @@ def show(df, apply_filters):
         return
 
     if df_real is not None and not use_demo:
+        # Detectar si es el formato transaccional (ej FINAL ENRIQUECIDO.xlsx)
+        if 'Fecha de Asignacion' in df_real.columns and ('Mat./Prest.' in df_real.columns or 'Matricula' in df_real.columns):
+            id_source_col = 'Mat./Prest.' if 'Mat./Prest.' in df_real.columns else 'Matricula'
+            val_col = 'Precio total eD' if tipo_comparacion == "Valor Económico (S/.)" else 'Cantidad'
+            
+            if val_col not in df_real.columns:
+                st.error(f"El archivo transaccional no contiene la columna '{val_col}' necesaria para esta métrica.")
+                return
+                
+            trans_df = df_real.copy()
+            trans_df['Fecha de Asignacion'] = pd.to_datetime(trans_df['Fecha de Asignacion'], errors='coerce')
+            trans_df = trans_df.dropna(subset=['Fecha de Asignacion'])
+            
+            # Extraer mes 
+            month_map = {1: 'Ene', 2: 'Feb', 3: 'Mar', 4: 'Abr', 5: 'May', 6: 'Jun', 7: 'Jul', 8: 'Ago', 9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dic'}
+            trans_df['Mes_Abbr'] = trans_df['Fecha de Asignacion'].dt.month.map(month_map)
+            
+            # Pivotar usando suma
+            df_real_pivot = trans_df.pivot_table(
+                index=id_source_col, 
+                columns='Mes_Abbr', 
+                values=val_col, 
+                aggfunc='sum', 
+                fill_value=0
+            ).reset_index()
+            
+            # Renombrar para que encaje con el resto del script
+            df_real_pivot = df_real_pivot.rename(columns={id_source_col: 'Matricula'})
+            df_real = df_real_pivot
+            st.info("🔄 Formato transaccional detectado. Los datos han sido agrupados por mes automáticamente.")
+            
+            with st.expander("Vista de datos agrupados"):
+                st.dataframe(df_real.head(), use_container_width=True, hide_index=True)
+
         id_cols = ['Matricula', 'Matrícula', 'DESCRIPCION']
         real_id_col = next((col for col in id_cols if col in df_real.columns), None)
         if real_id_col is None:
@@ -118,16 +159,30 @@ def show(df, apply_filters):
             fill_value=0
         ).reset_index().rename(columns={real_id_col: 'DESCRIPCION'})
 
-        for col in meses_real:
-            if col not in df_real_material.columns:
-                df_real_material[col] = 0
         real_mode = 'material'
 
     prevision_mensual = []
     real_mensual = []
-    for mes_p, mes_r in zip(meses_prev, meses_real):
-        prevision_mensual.append(df_comparison[mes_p].sum() if mes_p in df_comparison.columns else 0)
-        real_mensual.append(df_real_material[mes_r].sum() if mes_r in df_real_material.columns else 0)
+    meses_con_datos = []   # solo meses que tienen datos reales
+
+    for mes, mes_p, mes_r in zip(meses, meses_prev, meses_real):
+        val_real = df_real_material[mes_r].sum() if mes_r in df_real_material.columns else 0
+        val_prev = df_comparison[mes_p].sum() if mes_p in df_comparison.columns else 0
+        # Solo incluir meses que aparezcan en el archivo real (col presente y con algún valor)
+        if mes_r in df_real_material.columns and val_real >= 0:
+            meses_con_datos.append(mes)
+            prevision_mensual.append(val_prev)
+            real_mensual.append(val_real)
+
+    # Si no se detectaron meses (demo sin pivote), caer al modo original
+    if not meses_con_datos:
+        meses_con_datos = meses
+        prevision_mensual = [df_comparison[mp].sum() if mp in df_comparison.columns else 0 for mp in meses_prev]
+        real_mensual = [df_real_material[mr].sum() if mr in df_real_material.columns else 0 for mr in meses_real]
+
+    # meses_prev y meses_real acotados a los meses con datos
+    meses_prev_activos = [f'Valor_{m}' for m in meses_con_datos]
+    meses_real_activos = [f'Real_{m}' for m in meses_con_datos]
 
     total_prev = sum(prevision_mensual)
     total_real = sum(real_mensual)
@@ -140,13 +195,14 @@ def show(df, apply_filters):
         acum_real += real
         desv_acumulada.append(acum_real - acum_prev)
 
+
     tab_resumen, tab_detalle, tab_tabla = st.tabs(["Resumen Ejecutivo", "Análisis Detallado", "Tabla de Cumplimiento"])
 
     with tab_resumen:
         st.subheader("📈 Comparativo Mensual: Previsión vs Real")
         fig_comp = go.Figure()
-        fig_comp.add_trace(go.Bar(name='Previsión', x=meses, y=prevision_mensual, marker_color='#2C539E'))
-        fig_comp.add_trace(go.Bar(name='Real', x=meses, y=real_mensual, marker_color='#FFBE00'))
+        fig_comp.add_trace(go.Bar(name='Previsión', x=meses_con_datos, y=prevision_mensual, marker_color='#2C539E'))
+        fig_comp.add_trace(go.Bar(name='Real', x=meses_con_datos, y=real_mensual, marker_color='#FFBE00'))
         fig_comp.update_layout(
             barmode='group',
             xaxis_title='Mes',
@@ -171,7 +227,7 @@ def show(df, apply_filters):
         st.subheader("📉 Desviación Acumulada")
         fig_desv = go.Figure()
         fig_desv.add_trace(go.Scatter(
-            x=meses,
+            x=meses_con_datos,
             y=desv_acumulada,
             mode='lines+markers',
             line=dict(color='#E94F37', width=3),
@@ -197,12 +253,12 @@ def show(df, apply_filters):
         if tipo_analisis == "Proyecto" and real_mode != 'material':
             proyecto_select = st.selectbox("Seleccionar Proyecto:", df_comparison['Nombre del proyecto'].unique(), key="proyecto_vs_real")
             df_proy = df_comparison[df_comparison['Nombre del proyecto'] == proyecto_select]
-            prev_proy = [df_proy[c].sum() if c in df_proy.columns else 0 for c in meses_prev]
-            real_proy = [df_proy[c].sum() if c in df_proy.columns else 0 for c in meses_real]
+            prev_proy = [df_proy[c].sum() if c in df_proy.columns else 0 for c in meses_prev_activos]
+            real_proy = [df_proy[c].sum() if c in df_proy.columns else 0 for c in meses_real_activos]
 
             fig_proy = go.Figure()
-            fig_proy.add_trace(go.Bar(name='Previsión', x=meses, y=prev_proy, marker_color='#2C539E'))
-            fig_proy.add_trace(go.Bar(name='Real', x=meses, y=real_proy, marker_color='#64AA5A'))
+            fig_proy.add_trace(go.Bar(name='Previsión', x=meses_con_datos, y=prev_proy, marker_color='#2C539E'))
+            fig_proy.add_trace(go.Bar(name='Real', x=meses_con_datos, y=real_proy, marker_color='#64AA5A'))
             fig_proy.update_layout(
                 barmode='group',
                 xaxis_title='Mes',
@@ -213,11 +269,11 @@ def show(df, apply_filters):
             st.plotly_chart(fig_proy, use_container_width=True)
 
             mat_proy = df_proy.groupby('DESCRIPCION', dropna=False).agg({
-                **{mes_p: 'sum' for mes_p in meses_prev if mes_p in df_proy.columns},
-                **{mes_r: 'sum' for mes_r in meses_real if mes_r in df_proy.columns}
+                **{mes_p: 'sum' for mes_p in meses_prev_activos if mes_p in df_proy.columns},
+                **{mes_r: 'sum' for mes_r in meses_real_activos if mes_r in df_proy.columns}
             }).reset_index()
-            mat_proy['Previsión'] = mat_proy[[m for m in meses_prev if m in mat_proy.columns]].sum(axis=1)
-            mat_proy['Real'] = mat_proy[[m for m in meses_real if m in mat_proy.columns]].sum(axis=1)
+            mat_proy['Previsión'] = mat_proy[[m for m in meses_prev_activos if m in mat_proy.columns]].sum(axis=1)
+            mat_proy['Real'] = mat_proy[[m for m in meses_real_activos if m in mat_proy.columns]].sum(axis=1)
             mat_proy['Desviación'] = mat_proy['Real'] - mat_proy['Previsión']
             mat_proy['% Cumpl.'] = np.where(mat_proy['Previsión'] > 0, (mat_proy['Real'] / mat_proy['Previsión']) * 100, np.nan)
             tabla_mat = mat_proy[['DESCRIPCION', 'Previsión', 'Real', 'Desviación', '% Cumpl.']].sort_values('Desviación', key=np.abs, ascending=False).head(10).copy()
@@ -239,11 +295,11 @@ def show(df, apply_filters):
             df_mat = df_comparison[df_comparison['DESCRIPCION'] == material_select]
             df_mat_real = df_real_material[df_real_material['DESCRIPCION'] == material_select]
 
-            prev_mat = [df_mat[c].sum() if c in df_mat.columns else 0 for c in meses_prev]
-            real_mat = [df_mat_real[c].sum() if c in df_mat_real.columns else 0 for c in meses_real]
+            prev_mat = [df_mat[c].sum() if c in df_mat.columns else 0 for c in meses_prev_activos]
+            real_mat = [df_mat_real[c].sum() if c in df_mat_real.columns else 0 for c in meses_real_activos]
             fig_mat = go.Figure()
-            fig_mat.add_trace(go.Bar(name='Previsión', x=meses, y=prev_mat, marker_color='#2C539E'))
-            fig_mat.add_trace(go.Bar(name='Real', x=meses, y=real_mat, marker_color='#64AA5A'))
+            fig_mat.add_trace(go.Bar(name='Previsión', x=meses_con_datos, y=prev_mat, marker_color='#2C539E'))
+            fig_mat.add_trace(go.Bar(name='Real', x=meses_con_datos, y=real_mat, marker_color='#64AA5A'))
             fig_mat.update_layout(
                 barmode='group',
                 xaxis_title='Mes',
@@ -255,9 +311,9 @@ def show(df, apply_filters):
 
             uso_proy = df_mat.groupby('Nombre del proyecto').agg({
                 'Total/Cantidad': 'sum',
-                **{m: 'sum' for m in meses_prev if m in df_mat.columns}
+                **{m: 'sum' for m in meses_prev_activos if m in df_mat.columns}
             }).reset_index()
-            uso_proy['Previsión'] = uso_proy[[m for m in meses_prev if m in uso_proy.columns]].sum(axis=1)
+            uso_proy['Previsión'] = uso_proy[[m for m in meses_prev_activos if m in uso_proy.columns]].sum(axis=1)
             uso_proy['Real'] = np.nan
             tabla_uso = uso_proy[['Nombre del proyecto', 'Total/Cantidad', 'Previsión', 'Real']].copy()
             tabla_uso.columns = ['Proyecto', 'Cantidad', 'Previsión', 'Real']
@@ -278,8 +334,8 @@ def show(df, apply_filters):
         detalle_base = df_comparison.groupby('Nombre del proyecto', dropna=False).sum(numeric_only=True).reset_index()
         detalle_rows = []
         for _, row in detalle_base.iterrows():
-            total_prev_proyecto = row[[m for m in meses_prev if m in row]].sum()
-            total_real_proyecto = row[[m for m in meses_real if m in row]].sum() if real_mode == 'row' else np.nan
+            total_prev_proyecto = row[[m for m in meses_prev_activos if m in row]].sum()
+            total_real_proyecto = row[[m for m in meses_real_activos if m in row]].sum() if real_mode == 'row' else np.nan
             detalle_rows.append({
                 'Proyecto': row['Nombre del proyecto'],
                 'Previsión Total': total_prev_proyecto,

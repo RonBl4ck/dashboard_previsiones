@@ -594,5 +594,69 @@ def show(df, apply_filters):
                     mime="application/vnd.ms-excel",
                     use_container_width=True
                 )
+
+                # ---- Guardar en Google Sheets ----
+                st.markdown("---")
+                st.subheader("💾 Aplicar Cambio en Google Sheets")
+                st.markdown(f"""
+                <div style="background-color: #FFF3CD; padding: 15px; border-radius: 10px; border-left: 4px solid #FFC107; margin-bottom: 15px;">
+                    <p style="margin: 0; color: #856404;"><strong>⚠️ Atención:</strong> Esta acción modificará el precio unitario de 
+                    <strong>{material_seleccionado[:50]}</strong> directamente en Google Sheets.</p>
+                    <p style="margin: 5px 0 0 0; color: #856404;">Precio actual: <strong>S/ {precio_actual:,.2f}</strong> → Nuevo: <strong>S/ {nuevo_precio:,.2f}</strong></p>
+                </div>
+                """, unsafe_allow_html=True)
+
+                confirmar = st.checkbox("Confirmo que deseo aplicar este cambio de precio en la base de datos", key="confirmar_precio_sheets")
+
+                if st.button("💾 Guardar Nuevo P.U. en Google Sheets", disabled=not confirmar, use_container_width=True, type="primary"):
+                    try:
+                        from pathlib import Path
+                        import gspread
+
+                        cred_path = Path(r"D:\PROGRAMACION\dashboard_previsiones\CREDENCIALES.json")
+                        gc = gspread.service_account(filename=str(cred_path))
+                        sh = gc.open("PREVISIONES 2026")
+                        worksheet = sh.worksheet("Hoja 1")
+
+                        # Obtener los datos para buscar las filas del material
+                        all_data = worksheet.get(value_render_option='UNFORMATTED_VALUE')
+                        headers = [str(h) for h in all_data[1]]
+
+                        # Encontrar índice de columna de Matrícula y P.U.
+                        pu_col_idx = headers.index('P.U. s/.') if 'P.U. s/.' in headers else None
+                        desc_col_idx = headers.index('DESCRIPCION') if 'DESCRIPCION' in headers else None
+                        mat_col_idx = headers.index('Matrícula') if 'Matrícula' in headers else None
+
+                        if pu_col_idx is None:
+                            st.error("No se encontró la columna 'P.U. s/.' en el Sheet.")
+                        else:
+                            # Buscar todas las filas que correspondan al material seleccionado
+                            filas_a_actualizar = []
+                            for row_idx, row in enumerate(all_data[2:], start=3):  # row 3 onward (1-indexed for Sheets)
+                                if desc_col_idx is not None and len(row) > desc_col_idx:
+                                    if str(row[desc_col_idx]).strip() == str(material_seleccionado).strip():
+                                        filas_a_actualizar.append(row_idx)
+
+                            if not filas_a_actualizar:
+                                st.warning("No se encontraron filas en el Sheet para este material.")
+                            else:
+                                # Preparar batch update
+                                pu_col_letter = chr(65 + pu_col_idx) if pu_col_idx < 26 else chr(64 + pu_col_idx // 26) + chr(65 + pu_col_idx % 26)
+                                
+                                cells_to_update = []
+                                for row_num in filas_a_actualizar:
+                                    cells_to_update.append(gspread.Cell(row=row_num, col=pu_col_idx + 1, value=nuevo_precio))
+
+                                worksheet.update_cells(cells_to_update)
+
+                                # Limpiar cache para que el dashboard recargue
+                                st.cache_data.clear()
+
+                                st.success(f"✅ ¡Precio actualizado! Se modificaron {len(filas_a_actualizar)} filas en Google Sheets.")
+                                st.info("🔄 El caché ha sido limpiado. Recarga la página (F5) para ver los nuevos valores calculados.")
+                                st.balloons()
+
+                    except Exception as e:
+                        st.error(f"❌ Error al guardar en Google Sheets: {e}")
     
 

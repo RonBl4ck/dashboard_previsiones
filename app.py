@@ -151,72 +151,132 @@ st.markdown("""
 # Cargar datos con cache
 @st.cache_data(ttl=3600)
 def load_data(file_path=None):
-    """Carga los datos de previsión desde un archivo Excel"""
-    if file_path is None:
-        file_path = Path(__file__).parent / "data" / "prevision_2026.xlsx"
+    """Carga los datos de prevision desde Google Sheets o un archivo Excel"""
     
-    df = pd.read_excel(file_path, sheet_name='PREVISION 01.26-(PI%)', header=1)
-    
-    # Limpieza básica
-    df = df[df['Año'] == 2026]  # Solo datos de 2026
-    df = df.dropna(subset=['DESCRIPCION'])  # Solo filas con descripción
-    
-    # Estandarizar ID y Descripción para agrupar por Matrícula
-    if 'Matricula' in df.columns or 'Matrícula' in df.columns:
-        s_mat = df.get('Matricula', pd.Series(index=df.index))
-        if 'Matrícula' in df.columns:
-            s_mat = s_mat.combine_first(df['Matrícula'])
-        
-        s_mat = s_mat.fillna('S/M').astype(str).str.strip().replace(r'\.0$', '', regex=True)
-        # Tomar el primer nombre para no tener duplicados por ligeras diferencias
-        desc_unificada = df.groupby(s_mat, dropna=False)['DESCRIPCION'].transform('first')
-        df['DESCRIPCION'] = s_mat + " - " + desc_unificada
-        df['Matricula_Clean'] = s_mat
+    MESES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
 
-    # Procesar columnas historicas
-    meses_hist = {
-        'Consumo 123': 'Hist_2023',
-        'Consumo 124': 'Hist_2024',
-        'Consumo 125': 'Hist_2025'
-    }
+    def _clean_numeric(series):
+        """Limpia strings con formato monetario (ej: 'S/ 1,234') y convierte a numero."""
+        try:
+            cleaned = series.astype(str).str.replace(r'^S/\s*', '', regex=True)
+            cleaned = cleaned.str.replace(',', '', regex=False).str.strip()
+            return pd.to_numeric(cleaned, errors='coerce')
+        except Exception:
+            return pd.to_numeric(series, errors='coerce')
+
+    if file_path is not None:
+        df = pd.read_excel(file_path, sheet_name='PREVISION 01.26-(PI%)', header=1)
+    else:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        try:
+            # Leer credenciales desde st.secrets (funciona local y en Streamlit Cloud)
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            scopes = [
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive",
+            ]
+            credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+            gc = gspread.authorize(credentials)
+            sh = gc.open("PREVISIONES 2026")
+            worksheet = sh.worksheet("Hoja 1")
+            # UNFORMATTED_VALUE evaluates all formulas and returns raw numeric results
+            data = worksheet.get(value_render_option='UNFORMATTED_VALUE')
+            headers = [str(h) for h in data[1]]
+            df = pd.DataFrame(data[2:], columns=headers)
+            df.replace("", pd.NA, inplace=True)
+
+            # Rename value-month columns: from the Sheet they come as 5-digit serials (Excel dates)
+            # e.g. 46024 -> Valor_Ene. Sep is a special case named 'Sep30'.
+            digit_5_cols = [c for c in headers if str(c).isdigit() and len(str(c)) == 5]
+            col_list = list(headers)
+            if 'Sep30' in col_list:
+                sep30_pos = col_list.index('Sep30')
+                before = [c for c in digit_5_cols if col_list.index(c) < sep30_pos]
+                after  = [c for c in digit_5_cols if col_list.index(c) > sep30_pos]
+                ordered = before[:8] + ['Sep30'] + after[:3]
+            else:
+                ordered = digit_5_cols[:12]
+            rename_map = {col: f'Valor_{MESES[i]}' for i, col in enumerate(ordered) if i < 12}
+            df = df.rename(columns=rename_map)
+
+            # Clean all columns: UNFORMATTED_VALUE gives numbers directly.
+            # For any cell that still comes as text (e.g. 'S/ 1,234' from conditional formatting)
+            # apply the S/ stripping fallback.
+            for col in df.columns:
+                direct = pd.to_numeric(df[col], errors='coerce')
+                if direct.notna().sum() > 0:
+                    df[col] = direct
+                else:
+                    # Fallback: strip S/ prefix and commas
+                    fallback = _clean_numeric(df[col])
+                    if fallback.notna().sum() > 0:
+                        df[col] = fallback
+        except Exception as e:
+            st.error(f"Error conectando a Google Sheets: {e}")
+            return pd.DataFrame()
+
+    # --- Limpieza comun (Excel y Sheets) ---
+    df['Año'] = pd.to_numeric(df['Año'], errors='coerce')
+    df = df[df['Año'] == 2026].copy()
+    df = df.dropna(subset=['DESCRIPCION'])
+
+    # Estandarizar Matricula y Descripcion
+    s_mat = df['Matricula'].copy() if 'Matricula' in df.columns else pd.Series('S/M', index=df.index)
+    if 'Matrícula' in df.columns:
+        s_mat = s_mat.combine_first(df['Matrícula'])
+    s_mat = s_mat.fillna('S/M').astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+    desc_unificada = df.groupby(s_mat, dropna=False)['DESCRIPCION'].transform('first')
+    df['DESCRIPCION'] = s_mat + ' - ' + desc_unificada.astype(str)
+    df['Matricula_Clean'] = s_mat
+
+    # Historicos
+    meses_hist = {'Consumo 123': 'Hist_2023', 'Consumo 124': 'Hist_2024', 'Consumo 125': 'Hist_2025'}
     df = df.rename(columns=meses_hist)
-    
-    historicos = [col for col in ['Hist_2023', 'Hist_2024', 'Hist_2025'] if col in df.columns]
+    historicos = [c for c in ['Hist_2023', 'Hist_2024', 'Hist_2025'] if c in df.columns]
     if historicos:
-        for col in historicos:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        df['Promedio_Historico'] = df[historicos].mean(axis=1, skipna=True).fillna(0)
+        for c in historicos:
+            df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+        df['Promedio_Historico'] = df[historicos].mean(axis=1).fillna(0)
     else:
         df['Promedio_Historico'] = 0
-        
-    # Renombrar columnas de valores mensuales para facilitar uso
-    meses_valor = {
+
+    # Renombrar columnas de CANTIDAD mensual (validas para ambos origenes)
+    meses_cant = {m: f'Cant_{m}' for m in MESES}
+    df = df.rename(columns=meses_cant)
+
+    # Para uploads de Excel: renombrar columnas de VALOR con sufijos numericos
+    excel_valor_map = {
         'Ene2': 'Valor_Ene', 'Feb3': 'Valor_Feb', 'Mar4': 'Valor_Mar',
         'Abr5': 'Valor_Abr', 'May6': 'Valor_May', 'Jun7': 'Valor_Jun',
         'Jul8': 'Valor_Jul', 'Ago9': 'Valor_Ago', 'Sep30': 'Valor_Sep',
         'Oct11': 'Valor_Oct', 'Nov12': 'Valor_Nov', 'Dic13': 'Valor_Dic'
     }
-    df = df.rename(columns=meses_valor)
-    
-    # Renombrar columnas de cantidades mensuales
-    meses_cant = {
-        'Ene': 'Cant_Ene', 'Feb': 'Cant_Feb', 'Mar': 'Cant_Mar',
-        'Abr': 'Cant_Abr', 'May': 'Cant_May', 'Jun': 'Cant_Jun',
-        'Jul': 'Cant_Jul', 'Ago': 'Cant_Ago', 'Sep': 'Cant_Sep',
-        'Oct': 'Cant_Oct', 'Nov': 'Cant_Nov', 'Dic': 'Cant_Dic'
-    }
-    df = df.rename(columns=meses_cant)
-    
-    # Crear una columna de valor anual total para consistencia
-    valor_cols = [f'Valor_{m}' for m in ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']]
-    existing_valor_cols = [col for col in valor_cols if col in df.columns]
-    df['Valor_Anual'] = df[existing_valor_cols].sum(axis=1)
-    
-    # Agregar el código del proyecto al nombre del proyecto
+    df = df.rename(columns=excel_valor_map)
+
+    # Calcular Valor_Anual
+    valor_cols = [f'Valor_{m}' for m in MESES]
+    existing_v = [c for c in valor_cols if c in df.columns]
+    for c in existing_v:
+        df[c] = _clean_numeric(df[c]).fillna(0)
+    df['Valor_Anual'] = df[existing_v].sum(axis=1)
+
+    # Limpiar otras columnas economicas
+    for c in ['Valor materiales (MS/.)', 'P.U. s/.', 'Total/Cantidad']:
+        if c in df.columns:
+            df[c] = _clean_numeric(df[c]).fillna(0)
+
+    # Limpiar columnas de cantidad mensual
+    for c in [f'Cant_{m}' for m in MESES]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+
+    # Agregar codigo de proyecto al nombre
     if 'Codigo del Proyecto' in df.columns and 'Nombre del proyecto' in df.columns:
-        df['Nombre del proyecto'] = df['Nombre del proyecto'].astype(str) + " (" + df['Codigo del Proyecto'].astype(str) + ")"
-    
+        df['Nombre del proyecto'] = df['Nombre del proyecto'].astype(str) + ' (' + df['Codigo del Proyecto'].astype(str) + ')'
+
     return df
+
 
 # Sidebar con navegación
 with st.sidebar:
@@ -274,20 +334,9 @@ with st.sidebar:
         seccion_filter = 'Todas'
         area_filter = 'Todas'
 
-    st.markdown("---")
-
-    # Carga de datos
-    st.markdown("### 📥 Cargar Datos")
-    uploaded_file = st.file_uploader(
-        "Sube tu archivo Excel de previsiones", 
-        type=['xlsx'],
-        help="El archivo debe tener la misma estructura que el de la plantilla."
-    )
-
-    if uploaded_file is not None:
-        st.cache_data.clear()
-        df_principal = load_data(uploaded_file)
-        st.success("¡Archivo cargado con éxito!")
+    # ---
+    # La carga de datos ahora es automática desde Google Sheets.
+    # Se eliminó la opción de subir Excel manual para mayor consistencia.
 
 # Función para aplicar filtros
 def apply_filters(df):

@@ -2,3 +2,7 @@ __pycache__/
 .venv/
 venv/
 .env
+
+# Credenciales - NUNCA subir a GitHub
+CREDENCIALES.json
+.streamlit/secrets.toml

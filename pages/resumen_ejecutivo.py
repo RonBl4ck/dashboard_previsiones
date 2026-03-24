@@ -359,7 +359,7 @@ def show(df, apply_filters):
             # Agrupar por material para comparar cantidades
             hist_df = df_filtered.groupby('DESCRIPCION').agg({
                 'Total/Cantidad': 'sum',
-                'Promedio_Historico': 'sum',
+                'Promedio_Historico': 'first',
                 'UNIDAD': 'first',
                 'Valor_Anual': 'sum',
                 'Nombre del proyecto': 'nunique'
