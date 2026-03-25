@@ -201,99 +201,72 @@ def show(df, apply_filters):
     # Pestaña 2: Análisis de Materiales
     with tab2:
         df_mat = df_filtered.copy()
-        df_mat['UNIDAD_NORM'] = df_mat['UNIDAD'].str.upper().replace({
-            'M': 'Metros', 'METROS': 'Metros',
-            'UN': 'Unidades', 'UND': 'Unidades',
-            'PZ': 'Piezas', 'PIEZAS': 'Piezas',
-            'C/U': 'Cada Uno', 'JG': 'Juegos', 'CA': 'Cajas'
-        })
         
+        # Agrupamos todos los materiales ignorando la unidad
         materiales = df_mat.groupby('DESCRIPCION').agg({
             'Total/Cantidad': 'sum',
             'Valor materiales (MS/.)': 'sum',
             'P.U. s/.': 'first',
-            'UNIDAD_NORM': 'first',
             'Nombre del proyecto': 'nunique'
         }).reset_index()
         
-        materiales.columns = ['Material', 'Cantidad', 'Valor', 'P.U.', 'Unidad', 'Proyectos']
+        materiales.columns = ['Material', 'Cantidad', 'Valor', 'P.U.', 'Proyectos']
         materiales = materiales.sort_values('Valor', ascending=False)
         
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         with col1:
             st.metric("Total Materiales", f"{len(materiales)}")
         with col2:
             st.metric("Valor Total", f"S/ {materiales['Valor'].sum():,.0f}")
-        with col3:
-            st.metric("Tipos de Unidad", f"{materiales['Unidad'].nunique()}")
         
         st.markdown("---")
         
-        col1, col2 = st.columns([1, 3])
-        with col1:
-            unidades_unicas = ['Todos'] + list(materiales['Unidad'].unique())
-            filtro_unidad = st.selectbox("Filtrar por Unidad:", unidades_unicas, key="material_unit_filter")
-        
-        mat_filtrados = materiales[materiales['Unidad'] == filtro_unidad] if filtro_unidad != 'Todos' else materiales
-        
-        if not mat_filtrados.empty:
-            if filtro_unidad == 'Todos':
-                df_unidad = mat_filtrados.groupby('Unidad')['Valor'].sum().reset_index()
-                fig_unidad = _create_custom_donut(
-                    df_unidad,
-                    'Unidad',
+        if not materiales.empty:
+            col_chart1, col_chart2 = st.columns(2)
+            material_focus = st.selectbox(
+                "Destacar material",
+                ['Ninguno'] + sorted(materiales['Material'].astype(str).tolist()),
+                key='focus_material_valor'
+            )
+            with col_chart1:
+                fig_val = _create_custom_donut(
+                    materiales.sort_values(
+                        'Valor',
+                        ascending=False,
+                        key=lambda s: s.where(materiales['Material'] != material_focus, s.max() + 1)
+                    ),
+                    'Material',
                     'Valor',
-                    'Distribución Económica por Tipo de Unidad',
+                    'Distribución por Valor (S/.)',
                     is_currency=True,
                     show_legend=False
                 )
-                st.plotly_chart(fig_unidad, use_container_width=True)
-            else:
-                col_chart1, col_chart2 = st.columns(2)
-                material_focus = st.selectbox(
-                    "Destacar material",
-                    ['Ninguno'] + sorted(mat_filtrados['Material'].astype(str).tolist()),
-                    key='focus_material_valor'
-                )
-                with col_chart1:
-                    fig_val = _create_custom_donut(
-                        mat_filtrados.sort_values(
-                            'Valor',
-                            ascending=False,
-                            key=lambda s: s.where(mat_filtrados['Material'] != material_focus, s.max() + 1)
-                        ),
-                        'Material',
-                        'Valor',
-                        f'Distribución por Valor (S/.) - {filtro_unidad}',
-                        is_currency=True,
-                        show_legend=False
-                    )
-                    st.plotly_chart(fig_val, use_container_width=True)
-                with col_chart2:
-                    fig_cant = _create_custom_donut(
-                        mat_filtrados.sort_values(
-                            'Cantidad',
-                            ascending=False,
-                            key=lambda s: s.where(mat_filtrados['Material'] != material_focus, s.max() + 1)
-                        ),
-                        'Material',
+                st.plotly_chart(fig_val, use_container_width=True)
+            with col_chart2:
+                fig_cant = _create_custom_donut(
+                    materiales.sort_values(
                         'Cantidad',
-                        f'Distribución por Cantidad - {filtro_unidad}',
-                        is_currency=False,
-                        show_legend=False
-                    )
-                    st.plotly_chart(fig_cant, use_container_width=True)
+                        ascending=False,
+                        key=lambda s: s.where(materiales['Material'] != material_focus, s.max() + 1)
+                    ),
+                    'Material',
+                    'Cantidad',
+                    'Distribución por Cantidad',
+                    is_currency=False,
+                    show_legend=False
+                )
+                st.plotly_chart(fig_cant, use_container_width=True)
             
             with st.expander("📋 Ver Detalle de Materiales"):
                 valor_min = st.number_input("Valor mínimo (MS/.):", 0, int(materiales['Valor'].max()), 0, step=10000)
                 
-                mat_tabla = mat_filtrados[mat_filtrados['Valor'] >= valor_min].copy()
+                mat_tabla = materiales[materiales['Valor'] >= valor_min].copy()
                 
                 tabla_display = mat_tabla.head(50).copy()
                 tabla_display['Material'] = tabla_display['Material'].str[:55]
                 
                 st.dataframe(
-                    tabla_display[['Material', 'Cantidad', 'Unidad', 'Valor', 'P.U.', 'Proyectos']],
+                    tabla_display[['Material', 'Cantidad', 'Valor', 'P.U.', 'Proyectos']],
                     use_container_width=True,
                     hide_index=True,
                     height=300,
@@ -304,9 +277,9 @@ def show(df, apply_filters):
                         'Proyectos': st.column_config.NumberColumn(format="%d")
                     }
                 )
-                st.caption(f"Mostrando {len(mat_tabla)} de {len(mat_filtrados)} materiales (máx 50 en tabla)")
+                st.caption(f"Mostrando {len(mat_tabla)} de {len(materiales)} materiales (máx 50 en tabla)")
         else:
-            st.info("No hay materiales para la unidad seleccionada.")
+            st.info("No hay materiales disponibles.")
 
     # Pestaña 3: Resumen por Proyecto
     with tab3:

@@ -16,6 +16,41 @@ def _money_column():
     return st.column_config.NumberColumn(format="S/ %.0f")
 
 
+def _bar_text(values, tipo_comparacion):
+    if tipo_comparacion == "Cantidad Física":
+        return [f"{value:,.0f}" for value in values]
+    return [f"S/ {value:,.0f}" for value in values]
+
+
+@st.cache_data(ttl=3600)
+def load_ejecutado():
+    """Carga los datos de consumo real desde Google Sheets (EJECUTADO)"""
+    import gspread
+    from google.oauth2.service_account import Credentials
+    try:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        gc = gspread.authorize(credentials)
+        sh = gc.open("EJECUTADO")
+        # Usamos la primera hoja por defecto
+        worksheet = sh.get_worksheet(0)
+        data = worksheet.get(value_render_option='UNFORMATTED_VALUE')
+        if not data:
+            return pd.DataFrame()
+            
+        headers = [str(h) for h in data[0]]
+        df = pd.DataFrame(data[1:], columns=headers)
+        df.replace("", pd.NA, inplace=True)
+        return df
+    except Exception as e:
+        st.error(f"Error conectando a Google Sheets (EJECUTADO): {e}")
+        return None
+
+
 def show(df, apply_filters):
     """Función principal de la página de Previsión vs Real"""
 
@@ -27,26 +62,26 @@ def show(df, apply_filters):
         st.warning("No hay datos con los filtros seleccionados")
         return
 
-    st.subheader("📁 Cargar Archivo de Consumo Real")
-    st.markdown("""
-    <div style="background-color: #E9ECEF; padding: 15px; border-radius: 10px; margin-bottom: 20px;">
-        <p style="margin: 0;"><strong>Formato esperado del archivo:</strong></p>
-        <ul style="margin: 5px 0;">
-            <li>Columna de identificación: Matricula, Matrícula o DESCRIPCION</li>
-            <li>Columnas mensuales: Ene, Feb, Mar, Abr, May, Jun, Jul, Ago, Sep, Oct, Nov, Dic</li>
-            <li>Formato: Excel (.xlsx) o CSV</li>
-        </ul>
-    </div>
-    """, unsafe_allow_html=True)
+    st.subheader("📁 Datos de Consumo Real (EJECUTADO)")
+    
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.info("💡 Los datos de consumo real se sincronizan automáticamente desde el Google Sheet **'EJECUTADO'**.")
+    with col2:
+        if st.button("🔄 Actualizar Datos", use_container_width=True):
+            load_ejecutado.clear()
+            st.rerun()
 
-    uploaded_file = st.file_uploader(
-        "Seleccionar archivo de consumo real:",
-        type=['xlsx', 'csv'],
-        help="Sube un archivo Excel o CSV con los datos de consumo real"
-    )
-    use_demo = st.checkbox("Usar datos de demostración (simular consumo)", value=False)
+    df_real = load_ejecutado()
+    use_demo = False
 
-    df_real = None
+    if df_real is not None and not df_real.empty:
+        st.success("✅ Datos de consumo real cargados exitosamente.")
+        with st.expander("Vista previa de los datos de consumo real"):
+            st.dataframe(df_real.head(10), use_container_width=True, hide_index=True)
+    else:
+        use_demo = st.checkbox("Activar simulación de demostración (por falta de datos)", value=False)
+
     df_comparison = df_filtered.copy()
     real_mode = None
     meses = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
@@ -61,20 +96,7 @@ def show(df, apply_filters):
     else:
         meses_prev = [f'Valor_{m}' for m in meses]
 
-    if uploaded_file is not None:
-        try:
-            if uploaded_file.name.endswith('.csv'):
-                df_real = pd.read_csv(uploaded_file)
-            else:
-                df_real = pd.read_excel(uploaded_file)
-            st.success(f"✅ Archivo cargado: {uploaded_file.name}")
-            st.write(f"Filas: {len(df_real)}, Columnas: {len(df_real.columns)}")
-            with st.expander("Vista previa del archivo original"):
-                st.dataframe(df_real.head(10), use_container_width=True, hide_index=True)
-        except Exception as e:
-            st.error(f"Error al cargar el archivo: {e}")
-            return
-    elif use_demo:
+    if use_demo:
         st.info("📊 Usando datos de demostración simulados")
         np.random.seed(42)
         for mes, mes_prev in zip(meses, meses_prev):
@@ -102,16 +124,56 @@ def show(df, apply_filters):
                 return
                 
             trans_df = df_real.copy()
-            trans_df['Fecha de Asignacion'] = pd.to_datetime(trans_df['Fecha de Asignacion'], errors='coerce')
+            # Dejamos la columna 'Fecha de Asignacion' intocable antes del if, y la parseamos mejor
+            
+            # --- Parseo de Fechas robusto ---
+            # Las fechas en Google Sheets pueden venir como número serial (ej. 46024 para Feb 2026) o como texto
+            fechas_numericas = pd.to_numeric(trans_df['Fecha de Asignacion'], errors='coerce')
+            mask_seriales = fechas_numericas > 30000
+            
+            fechas_convertidas = pd.to_datetime(
+                fechas_numericas[mask_seriales] - 2, # Ajuste para Google Sheets serial a datetime
+                unit='D', 
+                origin='1900-01-01'
+            )
+            
+            text_fechas = pd.to_datetime(
+                trans_df.loc[~mask_seriales, 'Fecha de Asignacion'].astype(str), 
+                dayfirst=True, 
+                errors='coerce'
+            )
+            
+            trans_df['Fecha de Asignacion'] = pd.concat([fechas_convertidas, text_fechas]).sort_index()
             trans_df = trans_df.dropna(subset=['Fecha de Asignacion'])
+            
+            # Ajustar Diciembre 2025 a Enero 2026
+            trans_df['Year'] = trans_df['Fecha de Asignacion'].dt.year
+            trans_df['Month'] = trans_df['Fecha de Asignacion'].dt.month
+            
+            mask_dec_2025 = (trans_df['Year'] == 2025) & (trans_df['Month'] == 12)
+            trans_df.loc[mask_dec_2025, 'Month'] = 1
             
             # Extraer mes 
             month_map = {1: 'Ene', 2: 'Feb', 3: 'Mar', 4: 'Abr', 5: 'May', 6: 'Jun', 7: 'Jul', 8: 'Ago', 9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dic'}
-            trans_df['Mes_Abbr'] = trans_df['Fecha de Asignacion'].dt.month.map(month_map)
+            trans_df['Mes_Abbr'] = trans_df['Month'].map(month_map)
             
+            # Asegurar que la columna a sumar es numérica y limpiar formato
+            cleaned_val = trans_df[val_col].astype(str).str.replace(r'^S/\s*', '', regex=True)
+            # Como la coma representa decimales ahora, sustituimos comas por puntos para Python
+            cleaned_val = cleaned_val.str.replace(',', '.', regex=False).str.strip()
+            trans_df[val_col] = pd.to_numeric(cleaned_val, errors='coerce').fillna(0)
+
+            # Detectar si hay columna de proyecto
+            cols_proyecto_posibles = ['Codigo del Proyecto', 'Proyecto', 'Elemento PEP', 'Nombre del proyecto']
+            proyecto_col_trans = next((col for col in cols_proyecto_posibles if col in trans_df.columns), None)
+            
+            index_cols = [id_source_col]
+            if proyecto_col_trans:
+                index_cols.append(proyecto_col_trans)
+
             # Pivotar usando suma
             df_real_pivot = trans_df.pivot_table(
-                index=id_source_col, 
+                index=index_cols, 
                 columns='Mes_Abbr', 
                 values=val_col, 
                 aggfunc='sum', 
@@ -119,7 +181,10 @@ def show(df, apply_filters):
             ).reset_index()
             
             # Renombrar para que encaje con el resto del script
-            df_real_pivot = df_real_pivot.rename(columns={id_source_col: 'Matricula'})
+            rename_dict = {id_source_col: 'Matricula'}
+            if proyecto_col_trans and proyecto_col_trans != 'Codigo del Proyecto':
+                rename_dict[proyecto_col_trans] = 'Codigo del Proyecto'
+            df_real_pivot = df_real_pivot.rename(columns=rename_dict)
             df_real = df_real_pivot
             st.info("🔄 Formato transaccional detectado. Los datos han sido agrupados por mes automáticamente.")
             
@@ -149,8 +214,17 @@ def show(df, apply_filters):
             return
 
         df_real_processed = df_real[[real_id_col] + real_month_cols].copy()
-        df_real_processed = df_real_processed.melt(id_vars=[real_id_col], var_name='Mes_Abbr', value_name='Real_Value')
+        
+        proyecto_col = 'Codigo del Proyecto' if 'Codigo del Proyecto' in df_real.columns else None
+        id_vars = [real_id_col]
+        if proyecto_col:
+            id_vars.append(proyecto_col)
+            # Add to df_real_processed as well
+            df_real_processed[proyecto_col] = df_real[proyecto_col]
+            
+        df_real_processed = df_real_processed.melt(id_vars=id_vars, var_name='Mes_Abbr', value_name='Real_Value')
         df_real_processed['Real_Mes'] = 'Real_' + df_real_processed['Mes_Abbr']
+        
         df_real_material = df_real_processed.pivot_table(
             index=real_id_col,
             columns='Real_Mes',
@@ -159,7 +233,34 @@ def show(df, apply_filters):
             fill_value=0
         ).reset_index().rename(columns={real_id_col: 'DESCRIPCION'})
 
-        real_mode = 'material'
+        if proyecto_col and 'Codigo del Proyecto' in df_comparison.columns:
+            # Join row by row to df_comparison
+            df_r = df_real_processed.pivot_table(
+                index=[real_id_col, proyecto_col],
+                columns='Real_Mes',
+                values='Real_Value',
+                aggfunc='sum',
+                fill_value=0
+            ).reset_index()
+            
+            comp_mat_col = 'Matricula_Clean' if 'Matricula_Clean' in df_comparison.columns else 'Matricula'
+            df_comparison['temp_key'] = df_comparison['Codigo del Proyecto'].astype(str).str.strip().str.upper() + "_" + df_comparison[comp_mat_col].astype(str).str.strip().replace(r'\.0$', '', regex=True)
+            df_r['temp_key'] = df_r[proyecto_col].astype(str).str.strip().str.upper() + "_" + df_r[real_id_col].astype(str).str.strip().replace(r'\.0$', '', regex=True)
+            
+            # Use only one line per project-material to store actuals so we don't duplicate on pivot/sum
+            first_idx = df_comparison.groupby('temp_key').head(1).index
+            
+            for m in meses_real:
+                if m not in df_comparison.columns:
+                    df_comparison[m] = 0.0
+                if m in df_r.columns:
+                    map_dict = dict(zip(df_r['temp_key'], df_r[m]))
+                    df_comparison.loc[first_idx, m] = df_comparison.loc[first_idx, 'temp_key'].map(map_dict).fillna(0)
+            
+            df_comparison.drop(columns=['temp_key'], inplace=True)
+            real_mode = 'row'
+        else:
+            real_mode = 'material'
 
     prevision_mensual = []
     real_mensual = []
@@ -186,7 +287,16 @@ def show(df, apply_filters):
 
     total_prev = sum(prevision_mensual)
     total_real = sum(real_mensual)
+    
+    # Calcular previsión de todo el año para la nueva métrica
+    total_prev_anual = 0
+    for m in meses_prev:
+        if m in df_comparison.columns:
+            total_prev_anual += df_comparison[m].sum()
+
     ejecucion = (total_real / total_prev * 100) if total_prev > 0 else 0
+    ejecucion_anual = (total_real / total_prev_anual * 100) if total_prev_anual > 0 else 0
+    
     desv_acumulada = []
     acum_prev = 0
     acum_real = 0
@@ -201,28 +311,46 @@ def show(df, apply_filters):
     with tab_resumen:
         st.subheader("📈 Comparativo Mensual: Previsión vs Real")
         fig_comp = go.Figure()
-        fig_comp.add_trace(go.Bar(name='Previsión', x=meses_con_datos, y=prevision_mensual, marker_color='#2C539E'))
-        fig_comp.add_trace(go.Bar(name='Real', x=meses_con_datos, y=real_mensual, marker_color='#FFBE00'))
+        fig_comp.add_trace(go.Bar(
+            name='Previsión',
+            x=meses_con_datos,
+            y=prevision_mensual,
+            marker_color='#2C539E',
+            text=_bar_text(prevision_mensual, tipo_comparacion),
+            textposition='outside'
+        ))
+        fig_comp.add_trace(go.Bar(
+            name='Real',
+            x=meses_con_datos,
+            y=real_mensual,
+            marker_color='#FFBE00',
+            text=_bar_text(real_mensual, tipo_comparacion),
+            textposition='outside'
+        ))
         fig_comp.update_layout(
             barmode='group',
             xaxis_title='Mes',
             yaxis_title='Valor (MS/.)',
             margin=dict(t=50, b=50, l=60, r=20),
             height=420,
-            legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)
+            legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5),
+            uniformtext_minsize=8,
+            uniformtext_mode='hide'
         )
         st.plotly_chart(fig_comp, use_container_width=True)
 
         st.subheader("📊 Métricas de Ejecución")
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
-            st.metric("Previsión Total", f"S/ {total_prev:,.0f}")
+            st.metric("Previsión (Activo)", f"S/ {total_prev:,.0f}", help="Suma de previsión solo de los meses que tienen consumo real")
         with col2:
             st.metric("Ejecución Real", f"S/ {total_real:,.0f}")
         with col3:
             st.metric("Diferencia", f"S/ {total_real - total_prev:,.0f}", delta=f"{total_real - total_prev:,.0f}")
         with col4:
-            st.metric("% Ejecución", f"{ejecucion:.1f}%")
+            st.metric("% Ejec. (Mensual)", f"{ejecucion:.1f}%", help="Porcentaje de ejecución vs previsión de los meses activos")
+        with col5:
+            st.metric("% Ejec. (Anual)", f"{ejecucion_anual:.1f}%", help=f"Ejecución total vs Previsión de Todo el Año (S/ {total_prev_anual:,.0f})")
 
         st.subheader("📉 Desviación Acumulada")
         fig_desv = go.Figure()
@@ -257,14 +385,30 @@ def show(df, apply_filters):
             real_proy = [df_proy[c].sum() if c in df_proy.columns else 0 for c in meses_real_activos]
 
             fig_proy = go.Figure()
-            fig_proy.add_trace(go.Bar(name='Previsión', x=meses_con_datos, y=prev_proy, marker_color='#2C539E'))
-            fig_proy.add_trace(go.Bar(name='Real', x=meses_con_datos, y=real_proy, marker_color='#64AA5A'))
+            fig_proy.add_trace(go.Bar(
+                name='Previsión',
+                x=meses_con_datos,
+                y=prev_proy,
+                marker_color='#2C539E',
+                text=_bar_text(prev_proy, tipo_comparacion),
+                textposition='outside'
+            ))
+            fig_proy.add_trace(go.Bar(
+                name='Real',
+                x=meses_con_datos,
+                y=real_proy,
+                marker_color='#64AA5A',
+                text=_bar_text(real_proy, tipo_comparacion),
+                textposition='outside'
+            ))
             fig_proy.update_layout(
                 barmode='group',
                 xaxis_title='Mes',
                 yaxis_title='Valor (MS/.)',
                 height=380,
-                margin=dict(t=40, b=40, l=60, r=20)
+                margin=dict(t=40, b=40, l=60, r=20),
+                uniformtext_minsize=8,
+                uniformtext_mode='hide'
             )
             st.plotly_chart(fig_proy, use_container_width=True)
 
@@ -298,14 +442,30 @@ def show(df, apply_filters):
             prev_mat = [df_mat[c].sum() if c in df_mat.columns else 0 for c in meses_prev_activos]
             real_mat = [df_mat_real[c].sum() if c in df_mat_real.columns else 0 for c in meses_real_activos]
             fig_mat = go.Figure()
-            fig_mat.add_trace(go.Bar(name='Previsión', x=meses_con_datos, y=prev_mat, marker_color='#2C539E'))
-            fig_mat.add_trace(go.Bar(name='Real', x=meses_con_datos, y=real_mat, marker_color='#64AA5A'))
+            fig_mat.add_trace(go.Bar(
+                name='Previsión',
+                x=meses_con_datos,
+                y=prev_mat,
+                marker_color='#2C539E',
+                text=_bar_text(prev_mat, tipo_comparacion),
+                textposition='outside'
+            ))
+            fig_mat.add_trace(go.Bar(
+                name='Real',
+                x=meses_con_datos,
+                y=real_mat,
+                marker_color='#64AA5A',
+                text=_bar_text(real_mat, tipo_comparacion),
+                textposition='outside'
+            ))
             fig_mat.update_layout(
                 barmode='group',
                 xaxis_title='Mes',
                 yaxis_title='Valor (MS/.)',
                 height=350,
-                margin=dict(t=40, b=40, l=60, r=20)
+                margin=dict(t=40, b=40, l=60, r=20),
+                uniformtext_minsize=8,
+                uniformtext_mode='hide'
             )
             st.plotly_chart(fig_mat, use_container_width=True)
 
