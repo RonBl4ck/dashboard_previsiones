@@ -23,6 +23,116 @@ def to_excel(df):
     return output.getvalue()
 
 
+def update_previsiones_sheet(ratio_dict, df_filtered):
+    """Actualiza las cantidades mensuales en la hoja PREVISIONES 2026 de Google Sheets.
+    
+    Args:
+        ratio_dict: dict {proyecto_label: ratio} con los ratios de ajuste.
+        df_filtered: DataFrame filtrado del dashboard con los datos originales.
+    Returns:
+        tuple (bool, str): (éxito, mensaje)
+    """
+    import gspread
+    from google.oauth2.service_account import Credentials
+
+    MESES_SHEET = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun',
+                   'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
+
+    try:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        gc = gspread.authorize(credentials)
+        sh = gc.open("PREVISIONES 2026")
+        worksheet = sh.worksheet("Hoja 1")
+
+        # Leer toda la hoja (headers en fila 2 = index 1)
+        all_data = worksheet.get(value_render_option='UNFORMATTED_VALUE')
+        headers = [str(h) for h in all_data[1]]
+
+        # Encontrar índices de columnas clave
+        def find_col_idx(name):
+            try:
+                return headers.index(name)
+            except ValueError:
+                return None
+
+        codigo_idx = find_col_idx('Codigo del Proyecto')
+        nombre_idx = find_col_idx('Nombre del proyecto')
+        anio_idx = find_col_idx('Año')
+        mes_indices = {m: find_col_idx(m) for m in MESES_SHEET}
+
+        if codigo_idx is None and nombre_idx is None:
+            return False, "No se encontró columna 'Codigo del Proyecto' ni 'Nombre del proyecto' en la hoja."
+
+        # Mapear los labels del simulador ("CODIGO - DESCRIPCION") al código de proyecto
+        # El simulador usa format_project_label que produce "Codigo - Descripcion"
+        proyecto_codigo_map = {}  # codigo_proyecto -> ratio
+        for label, ratio in ratio_dict.items():
+            if ' - ' in label:
+                codigo = label.split(' - ')[0].strip()
+            else:
+                # Intentar extraer de formato "Descripcion (Codigo)"
+                match = re.match(r"^.*\((.*)\)$", label.strip())
+                codigo = match.group(1).strip() if match else label.strip()
+            proyecto_codigo_map[str(codigo).upper().replace('.0', '')] = ratio
+
+        # Recorrer filas y preparar actualizaciones batch
+        cells_to_update = []
+        filas_afectadas = 0
+
+        for row_idx in range(2, len(all_data)):  # Empezamos desde fila de datos (index 2)
+            row = all_data[row_idx]
+
+            # Verificar que sea año 2026
+            if anio_idx is not None and row_idx < len(all_data):
+                try:
+                    anio_val = float(row[anio_idx]) if anio_idx < len(row) else None
+                    if anio_val != 2026:
+                        continue
+                except (ValueError, TypeError):
+                    continue
+
+            # Obtener código del proyecto de la fila
+            codigo_fila = None
+            if codigo_idx is not None and codigo_idx < len(row):
+                codigo_fila = str(row[codigo_idx]).strip().upper().replace('.0', '')
+
+            if codigo_fila and codigo_fila in proyecto_codigo_map:
+                ratio = proyecto_codigo_map[codigo_fila]
+                filas_afectadas += 1
+
+                for mes, col_idx in mes_indices.items():
+                    if col_idx is not None and col_idx < len(row):
+                        try:
+                            val_original = float(row[col_idx]) if row[col_idx] not in (None, '', 'None') else 0
+                        except (ValueError, TypeError):
+                            val_original = 0
+                        val_nuevo = round(val_original * ratio, 4)
+                        # gspread usa 1-indexed rows and columns
+                        cells_to_update.append(
+                            gspread.Cell(
+                                row=row_idx + 1,  # +1 porque gspread es 1-indexed
+                                col=col_idx + 1,
+                                value=val_nuevo
+                            )
+                        )
+
+        if not cells_to_update:
+            return False, f"No se encontraron filas que coincidan con los proyectos modificados. Códigos buscados: {list(proyecto_codigo_map.keys())}"
+
+        # Escribir en batch
+        worksheet.update_cells(cells_to_update, value_input_option='RAW')
+
+        return True, f"✅ Se actualizaron {len(cells_to_update)} celdas en {filas_afectadas} filas de la hoja PREVISIONES 2026."
+
+    except Exception as e:
+        return False, f"Error actualizando Google Sheets: {e}"
+
+
 def format_project_label(project_name):
     """Convierte 'Descripcion (Codigo)' a 'Codigo - Descripcion'."""
     if not isinstance(project_name, str):
@@ -60,25 +170,6 @@ def show(df, apply_filters):
     df_filtered['Nombre del proyecto'] = df_filtered['Nombre del proyecto'].apply(format_project_label)
 
     presupuesto_actual = df_filtered['Valor materiales (MS/.)'].sum()
-
-    st.markdown(
-        """
-        <div style="background-color: white;
-                    border: 1px solid #E0E0E0;
-                    border-radius: 15px; padding: 25px; color: #1E3A8A; margin-bottom: 20px;">
-            <h3 style="margin: 0; color: #555555; font-weight: normal;">Presupuesto Actual</h3>
-            <h1 style="margin: 5px 0 5px 0; font-size: 2.5rem; color: #1E3A8A;">S/ {:,.0f}</h1>
-            <p style="margin: 0; color: #555555;">Materiales: {} | Proyectos: {}</p>
-        </div>
-        """.format(
-            presupuesto_actual,
-            df_filtered['DESCRIPCION'].nunique(),
-            df_filtered['Nombre del proyecto'].nunique(),
-        ),
-        unsafe_allow_html=True,
-    )
-
-    st.subheader("Ajuste por Proyecto")
 
     state_key = "simulador_project_overrides"
     if state_key not in st.session_state:
@@ -355,10 +446,10 @@ def show(df, apply_filters):
 
     df_export_materiales = materiales_agg[cols_export]
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         st.download_button(
-            label="Exportar Ajustes por Proyecto",
+            label="📥 Exportar Ajustes por Proyecto",
             data=to_excel(edited_proyectos),
             file_name="simulacion_ajuste_proyectos.xlsx",
             mime="application/vnd.ms-excel",
@@ -366,9 +457,38 @@ def show(df, apply_filters):
         )
     with col2:
         st.download_button(
-            label="Exportar Evolucion Materiales (Mes a Mes)",
+            label="📥 Exportar Materiales (Mes a Mes)",
             data=to_excel(df_export_materiales),
             file_name="simulacion_materiales_evolucion.xlsx",
             mime="application/vnd.ms-excel",
             use_container_width=True,
         )
+    with col3:
+        if st.button("🔄 Actualizar Base de Datos", use_container_width=True, type="primary", key="btn_actualizar_bd"):
+            st.session_state['confirmar_actualizacion'] = True
+
+    # Diálogo de confirmación
+    if st.session_state.get('confirmar_actualizacion', False):
+        st.warning(
+            "⚠️ **¿Estás seguro?** Esto modificará permanentemente las cantidades mensuales "
+            "en la hoja 'PREVISIONES 2026' de Google Sheets para los proyectos simulados."
+        )
+        conf_col1, conf_col2 = st.columns(2)
+        with conf_col1:
+            if st.button("✅ Sí, actualizar", use_container_width=True, key="confirmar_si"):
+                with st.spinner("Actualizando Google Sheets..."):
+                    success, msg = update_previsiones_sheet(ratio_dict, df_filtered)
+                if success:
+                    st.success(msg)
+                    # Limpiar caché para reflejar cambios
+                    st.cache_data.clear()
+                    st.session_state[state_key] = {}
+                    st.session_state['confirmar_actualizacion'] = False
+                    st.balloons()
+                else:
+                    st.error(msg)
+                    st.session_state['confirmar_actualizacion'] = False
+        with conf_col2:
+            if st.button("❌ Cancelar", use_container_width=True, key="confirmar_no"):
+                st.session_state['confirmar_actualizacion'] = False
+                st.rerun()
