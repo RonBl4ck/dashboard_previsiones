@@ -1,6 +1,6 @@
 """
-Página de Previsión vs Consumo Real
-Permite cargar un archivo de consumo real y comparar con la previsión
+Página de Previsión vs Emitido
+Permite comparar la previsión con el consumo emitido
 """
 
 import streamlit as st
@@ -52,9 +52,9 @@ def load_ejecutado():
 
 
 def show(df, apply_filters):
-    """Función principal de la página de Previsión vs Real"""
+    """Función principal de la página de Previsión vs Emitido"""
 
-    st.title("📊 Previsión vs Consumo Real")
+    st.title("📊 Previsión vs Emitido")
     st.markdown("---")
 
     df_filtered = apply_filters(df)
@@ -115,7 +115,7 @@ def show(df, apply_filters):
 
     st.markdown("---")
     if not (use_demo or df_real is not None):
-        st.info("👉 Carga un archivo de consumo real o activa los datos de demostración para ver las comparaciones.")
+        st.info("👉 Activa los datos de demostración para ver las comparaciones.")
         return
 
     if df_real is not None and not use_demo:
@@ -240,13 +240,34 @@ def show(df, apply_filters):
         df_real_processed = df_real_processed.melt(id_vars=id_vars, var_name='Mes_Abbr', value_name='Real_Value')
         df_real_processed['Real_Mes'] = 'Real_' + df_real_processed['Mes_Abbr']
         
-        df_real_material = df_real_processed.pivot_table(
+        # --- NUEVA LÓGICA DE FILTRADO ---
+        # Obtener set de materiales válidos de la previsión
+        materiales_validos = set(df['Matricula_Clean'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True).unique())
+        
+        # Identificar materiales en el real
+        df_real_processed['Mat_Code_Temp'] = (
+            df_real_processed['Matricula_Original'] 
+            if 'Matricula_Original' in df_real_processed.columns 
+            else df_real_processed[real_id_col]
+        ).astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+        
+        # Separar Maqueados de No Mapeados
+        mask_mapped = df_real_processed['Mat_Code_Temp'].isin(materiales_validos)
+        df_real_mapped = df_real_processed[mask_mapped].copy()
+        df_real_unmapped = df_real_processed[~mask_mapped].copy()
+        
+        # Los gráficos y KPIs usarán solo el Mapeado
+        df_real_material = df_real_mapped.pivot_table(
             index=real_id_col,
             columns='Real_Mes',
             values='Real_Value',
             aggfunc='sum',
             fill_value=0
         ).reset_index().rename(columns={real_id_col: 'DESCRIPCION'})
+        
+        # Limpiar columna temporal
+        df_real_mapped.drop(columns=['Mat_Code_Temp'], inplace=True)
+        # -------------------------------
 
         if proyecto_col and 'Codigo del Proyecto' in df_comparison.columns:
             # Join row by row to df_comparison
@@ -255,7 +276,7 @@ def show(df, apply_filters):
             if 'Matricula_Original' in df_real_processed.columns:
                 actual_pivot_index.append('Matricula_Original')
                 
-            df_r = df_real_processed.pivot_table(
+            df_r = df_real_mapped.pivot_table(
                 index=actual_pivot_index,
                 columns='Real_Mes',
                 values='Real_Value',
@@ -329,8 +350,8 @@ def show(df, apply_filters):
         if m in df_comparison.columns:
             total_prev_anual += df_comparison[m].sum()
 
-    ejecucion = (total_real / total_prev * 100) if total_prev > 0 else 0
-    ejecucion_anual = (total_real / total_prev_anual * 100) if total_prev_anual > 0 else 0
+    emision = (total_real / total_prev * 100) if total_prev > 0 else 0
+    emision_anual = (total_real / total_prev_anual * 100) if total_prev_anual > 0 else 0
     
     desv_acumulada = []
     acum_prev = 0
@@ -341,22 +362,36 @@ def show(df, apply_filters):
         desv_acumulada.append(acum_real - acum_prev)
 
 
-    tab_resumen, tab_detalle, tab_tabla = st.tabs(["Resumen Ejecutivo", "Análisis Detallado", "Tabla de Cumplimiento"])
+    tab_resumen, tab_detalle, tab_tabla, tab_auditoria = st.tabs([
+        "Resumen Ejecutivo", 
+        "Análisis Detallado", 
+        "Tabla de Cumplimiento",
+        "📋 Materiales Fuera de Programa"
+    ])
 
     with tab_resumen:
-        st.subheader("📊 Métricas de Ejecución")
+        st.subheader("📊 Métricas de Emisión")
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Previsión (Activo)", f"S/ {total_prev:,.0f}", help="Suma de previsión solo de los meses que tienen consumo real")
         with col2:
-            st.metric("Ejecución Real", f"S/ {total_real:,.0f}")
+            st.metric("Emitido", f"S/ {total_real:,.0f}")
         with col3:
-            st.metric("Diferencia", f"S/ {total_real - total_prev:,.0f}", delta=f"{total_real - total_prev:,.0f}")
+            diff = total_real - total_prev
+            color = "#E94F37" if diff > 0 else "#2ECC71"
+            symbol = "▲" if diff > 0 else "▼"
+            # Componente minimalista para igualar el alto de st.metric
+            st.markdown(f"""
+                <div style="background-color: white; padding: 5px 12px; border-radius: 8px; border-left: 5px solid {color}; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); height: 85px; display: flex; flex-direction: column; justify-content: center;">
+                    <div style="color: #666; font-size: 0.85rem; line-height: 1.2;">Diferencia (vs Activo)</div>
+                    <div style="color: {color}; font-size: 1.5rem; font-weight: bold; margin-top: 4px;">{symbol} S/ {abs(diff):,.0f}</div>
+                </div>
+            """, unsafe_allow_html=True)
         col4, col5 = st.columns(2)
         with col4:
-            st.metric("% Ejec. (Mensual)", f"{ejecucion:.1f}%", help="Porcentaje de ejecución vs previsión de los meses activos")
+            st.metric("% Emitido (Mensual)", f"{emision:.1f}%", help="Porcentaje emitido vs previsión de los meses activos")
         with col5:
-            st.metric("% Ejec. (Anual)", f"{ejecucion_anual:.1f}%", help=f"Ejecución total vs Previsión de Todo el Año (S/ {total_prev_anual:,.0f})")
+            st.metric("% Emitido (Anual)", f"{emision_anual:.1f}%", help=f"Emisión total vs Previsión de Todo el Año (S/ {total_prev_anual:,.0f})")
 
         col_chart, col_desv = st.columns([2, 1])
         with col_chart:
@@ -368,15 +403,17 @@ def show(df, apply_filters):
                 y=prevision_mensual,
                 marker_color='#2C539E',
                 text=_bar_text(prevision_mensual, tipo_comparacion),
-                textposition='outside'
+                textposition='outside',
+                textfont=dict(size=13, color='black')
             ))
             fig_comp.add_trace(go.Bar(
-                name='Real',
+                name='Emitido',
                 x=meses_con_datos,
                 y=real_mensual,
                 marker_color='#FFBE00',
                 text=_bar_text(real_mensual, tipo_comparacion),
-                textposition='outside'
+                textposition='outside',
+                textfont=dict(size=13, color='black')
             ))
             fig_comp.update_layout(
                 barmode='group',
@@ -392,7 +429,7 @@ def show(df, apply_filters):
 
         with col_desv:
             st.subheader("📉 Desviación")
-            st.caption("Diferencia acumulada entre consumo real y previsión")
+            st.caption("Diferencia acumulada entre emitido y previsión")
             fig_desv = go.Figure()
             fig_desv.add_trace(go.Scatter(
                 x=meses_con_datos,
@@ -434,15 +471,17 @@ def show(df, apply_filters):
                 y=prev_proy,
                 marker_color='#2C539E',
                 text=_bar_text(prev_proy, tipo_comparacion),
-                textposition='outside'
+                textposition='outside',
+                textfont=dict(size=12, color='black')
             ))
             fig_proy.add_trace(go.Bar(
-                name='Real',
+                name='Emitido',
                 x=meses_con_datos,
                 y=real_proy,
                 marker_color='#64AA5A',
                 text=_bar_text(real_proy, tipo_comparacion),
-                textposition='outside'
+                textposition='outside',
+                textfont=dict(size=12, color='black')
             ))
             fig_proy.update_layout(
                 barmode='group',
@@ -461,20 +500,20 @@ def show(df, apply_filters):
                 **{mes_r: 'sum' for mes_r in meses_real_activos if mes_r in df_proy.columns}
             }).reset_index()
             mat_proy['Previsión'] = mat_proy[[m for m in meses_prev_activos if m in mat_proy.columns]].sum(axis=1)
-            mat_proy['Real'] = mat_proy[[m for m in meses_real_activos if m in mat_proy.columns]].sum(axis=1)
-            mat_proy['Desviación'] = mat_proy['Real'] - mat_proy['Previsión']
-            mat_proy['% Cumpl.'] = np.where(mat_proy['Previsión'] > 0, (mat_proy['Real'] / mat_proy['Previsión']) * 100, np.nan)
-            tabla_mat = mat_proy[['DESCRIPCION', 'Previsión', 'Real', 'Desviación', '% Cumpl.']].sort_values('Desviación', key=np.abs, ascending=False).head(10).copy()
-            tabla_mat.columns = ['Material', 'Previsión', 'Real', 'Desviación', '% Cumpl.']
+            mat_proy['Emitido'] = mat_proy[[m for m in meses_real_activos if m in mat_proy.columns]].sum(axis=1)
+            mat_proy['Desviación'] = mat_proy['Emitido'] - mat_proy['Previsión']
+            mat_proy['% Cumpl.'] = np.where(mat_proy['Previsión'] > 0, (mat_proy['Emitido'] / mat_proy['Previsión']) * 100, np.nan)
+            tabla_mat = mat_proy[['DESCRIPCION', 'Previsión', 'Emitido', 'Desviación', '% Cumpl.']].sort_values('Desviación', key=np.abs, ascending=False).head(10).copy()
+            tabla_mat.columns = ['Material', 'Previsión', 'Emitido', 'Desviación', '% Cumpl.']
             tabla_mat['Material'] = tabla_mat['Material'].str[:45]
             st.dataframe(
                 tabla_mat,
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    'Previsión': _money_column(),
-                    'Real': _money_column(),
-                    'Desviación': _money_column(),
+                    'Previsión': _money_column() if tipo_comparacion != "Cantidad Física" else st.column_config.NumberColumn(format="%.0f"),
+                    'Emitido': _money_column() if tipo_comparacion != "Cantidad Física" else st.column_config.NumberColumn(format="%.0f"),
+                    'Desviación': _money_column() if tipo_comparacion != "Cantidad Física" else st.column_config.NumberColumn(format="%.0f"),
                     '% Cumpl.': st.column_config.NumberColumn(format="%.1f%%")
                 }
             )
@@ -493,15 +532,17 @@ def show(df, apply_filters):
                 y=prev_mat,
                 marker_color='#2C539E',
                 text=_bar_text(prev_mat, tipo_comparacion),
-                textposition='outside'
+                textposition='outside',
+                textfont=dict(size=12, color='black')
             ))
             fig_mat.add_trace(go.Bar(
-                name='Real',
+                name='Emitido',
                 x=meses_con_datos,
                 y=real_mat,
                 marker_color='#64AA5A',
                 text=_bar_text(real_mat, tipo_comparacion),
-                textposition='outside'
+                textposition='outside',
+                textfont=dict(size=12, color='black')
             ))
             fig_mat.update_layout(
                 barmode='group',
@@ -520,9 +561,9 @@ def show(df, apply_filters):
                 **{m: 'sum' for m in meses_prev_activos if m in df_mat.columns}
             }).reset_index()
             uso_proy['Previsión'] = uso_proy[[m for m in meses_prev_activos if m in uso_proy.columns]].sum(axis=1)
-            uso_proy['Real'] = np.nan
-            tabla_uso = uso_proy[['Nombre del proyecto', 'Total/Cantidad', 'Previsión', 'Real']].copy()
-            tabla_uso.columns = ['Proyecto', 'Cantidad', 'Previsión', 'Real']
+            uso_proy['Emitido'] = np.nan
+            tabla_uso = uso_proy[['Nombre del proyecto', 'Total/Cantidad', 'Previsión', 'Emitido']].copy()
+            tabla_uso.columns = ['Proyecto', 'Cantidad', 'Previsión', 'Emitido']
             tabla_uso['Proyecto'] = tabla_uso['Proyecto'].str[:50]
             st.dataframe(
                 tabla_uso,
@@ -530,8 +571,8 @@ def show(df, apply_filters):
                 hide_index=True,
                 column_config={
                     'Cantidad': st.column_config.NumberColumn(format="%.0f"),
-                    'Previsión': _money_column(),
-                    'Real': _money_column()
+                    'Previsión': _money_column() if tipo_comparacion != "Cantidad Física" else st.column_config.NumberColumn(format="%.0f"),
+                    'Emitido': _money_column() if tipo_comparacion != "Cantidad Física" else st.column_config.NumberColumn(format="%.0f")
                 }
             )
 
@@ -546,7 +587,7 @@ def show(df, apply_filters):
             detalle_rows.append({
                 'Proyecto': row['Nombre del proyecto'],
                 'Previsión Total': total_prev_proyecto,
-                'Real Total': total_real_proyecto,
+                'Emitido Total': total_real_proyecto,
                 'Diferencia': total_real_proyecto - total_prev_proyecto if pd.notna(total_real_proyecto) else np.nan,
                 '% Cumplimiento': (total_real_proyecto / total_prev_proyecto * 100) if pd.notna(total_real_proyecto) and total_prev_proyecto > 0 else np.nan
             })
@@ -556,9 +597,61 @@ def show(df, apply_filters):
             use_container_width=True,
             hide_index=True,
             column_config={
-                'Previsión Total': _money_column(),
-                'Real Total': _money_column(),
-                'Diferencia': _money_column(),
+                'Previsión Total': _money_column() if tipo_comparacion != "Cantidad Física" else st.column_config.NumberColumn(format="%.0f"),
+                'Emitido Total': _money_column() if tipo_comparacion != "Cantidad Física" else st.column_config.NumberColumn(format="%.0f"),
+                'Diferencia': _money_column() if tipo_comparacion != "Cantidad Física" else st.column_config.NumberColumn(format="%.0f"),
                 '% Cumplimiento': st.column_config.NumberColumn(format="%.1f%%")
             }
         )
+
+    with tab_auditoria:
+        st.subheader("📋 Materiales Fuera de Programa")
+        st.caption("Estos materiales se encuentran en el archivo 'EJECUTADO' pero NO están en la Previsión 2026.")
+        
+        if 'df_real_unmapped' in locals() and not df_real_unmapped.empty:
+            # Agrupar por material y proyecto para la auditoría
+            audit_index = ['Mat_Code_Temp']
+            if proyecto_col:
+                audit_index.append(proyecto_col)
+            
+            df_audit = df_real_unmapped.groupby(audit_index)['Real_Value'].sum().reset_index()
+            df_audit.columns = ['Material', 'Proyecto', 'Total Emitido'] if proyecto_col else ['Material', 'Total Emitido']
+            df_audit['Tener en cuenta'] = False
+            
+            edited_audit = st.data_editor(
+                df_audit,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Total Emitido": st.column_config.NumberColumn(format="S/ %.0f"),
+                    "Tener en cuenta": st.column_config.CheckboxColumn(
+                        "Tener en cuenta",
+                        help="Marca para incluir en el reporte de exportación",
+                        default=False
+                    )
+                }
+            )
+            
+            # Exportación de lo seleccionado
+            seleccionados = edited_audit[edited_audit['Tener en cuenta'] == True]
+            if not seleccionados.empty:
+                from io import BytesIO
+                
+                def to_excel_audit(df_sel):
+                    output = BytesIO()
+                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                        df_sel.to_excel(writer, index=False, sheet_name='Fuera de Programa')
+                    return output.getvalue()
+                
+                st.download_button(
+                    label="📥 Descargar Reporte de Materiales a Tener en Cuenta",
+                    data=to_excel_audit(seleccionados),
+                    file_name="materiales_fuera_de_prevision.xlsx",
+                    mime="application/vnd.ms-excel",
+                    use_container_width=True,
+                    type="primary"
+                )
+            else:
+                st.info("Marca los materiales en la columna 'Tener en cuenta' para generar un reporte descargable.")
+        else:
+            st.success("✅ ¡Perfecto! Todos los materiales emitidos se encuentran en la previsión.")

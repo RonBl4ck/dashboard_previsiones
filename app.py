@@ -237,9 +237,9 @@ def load_data(file_path=None):
     if historicos:
         for c in historicos:
             df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
-        df['Promedio_Historico'] = df[historicos].mean(axis=1).fillna(0)
+        df['Maximo_Historico'] = df[historicos].max(axis=1).fillna(0)
     else:
-        df['Promedio_Historico'] = 0
+        df['Maximo_Historico'] = 0
 
     # Renombrar columnas de CANTIDAD mensual (validas para ambos origenes)
     meses_cant = {m: f'Cant_{m}' for m in MESES}
@@ -294,7 +294,7 @@ with st.sidebar:
     
     selected = option_menu(
         menu_title=None,
-        options=["Resumen", "Previsión vs Real", 
+        options=["Resumen", "Previsión vs Emitido", 
                  "Simulador", "Saldos y Ajustes"],
         icons=["house", "graph-up-arrow", "sliders", "box-seam"],
         menu_icon="cast",
@@ -313,6 +313,7 @@ with st.sidebar:
             "nav-link-selected": {"background-color": "#2E86AB", "color": "white"},
         }
     )
+
     
     st.markdown("---")
     
@@ -357,7 +358,7 @@ if not df_principal.empty:
         from pages import resumen_ejecutivo
         resumen_ejecutivo.show(df_principal, apply_filters)
         
-    elif selected == "Previsión vs Real":
+    elif selected == "Previsión vs Emitido":
         from pages import prevision_vs_real
         prevision_vs_real.show(df_principal, apply_filters)
         

@@ -34,7 +34,7 @@ def show(df, apply_filters):
     meses = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
     meses_col = [f'{prefix}{m}' for m in meses]
     
-    st.markdown("---")
+
     
     # Evolución mensual general
     st.subheader("📈 Evolución Mensual General")

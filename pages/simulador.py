@@ -405,9 +405,9 @@ def show(df, apply_filters):
         use_container_width=True,
         hide_index=True,
         column_config={
-            "Cantidad Original": st.column_config.NumberColumn(format="%.2f"),
-            "Cantidad Simulada": st.column_config.NumberColumn(format="%.2f"),
-            "Diferencia Cantidad": st.column_config.NumberColumn(format="%+.2f"),
+            "Cantidad Original": st.column_config.NumberColumn(format="%.0f", help="Unidades redondeadas (cálculo exacto interno)"),
+            "Cantidad Simulada": st.column_config.NumberColumn(format="%.0f", help="Unidades redondeadas (cálculo exacto interno)"),
+            "Diferencia Cantidad": st.column_config.NumberColumn(format="%+.0f", help="Diferencia de unidades redondeada"),
         },
     )
 
@@ -432,7 +432,7 @@ def show(df, apply_filters):
         use_container_width=True,
         hide_index=True,
         column_config={
-            col: st.column_config.NumberColumn(format="%.2f")
+            col: st.column_config.NumberColumn(format="%.0f", help="Unidades redondeadas visualmente")
             for col in detalle_mensual.columns
             if col not in ['Nombre del proyecto', 'DESCRIPCION']
         },

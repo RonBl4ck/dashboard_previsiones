@@ -1,0 +1,6 @@
+# Reglas de Antigravity para este Workspace
+
+- **Uso de Skills:** Antes de iniciar cualquier tarea compleja (planificación, refactorización, diseño de UI o lógica de negocio), REVISA siempre la carpeta `d:\PROGRAMACION\.agents\skills`.
+- **Prioridad de Skills:** Si encuentras un skill relevante (ej. `planificacion-pro`, `brainstorming-pro`), ÚSALO obligatoriamente siguiendo su estructura de output definida en su `SKILL.md`.
+- **Modo Producción:** Siempre mantén un estándar de diseño "Premium" y "Wow" siguiendo las directrices del skill `modo-produccion` si está disponible.
+- **Confirmación:** Al inicio de un plan, menciona brevemente qué skill estás aplicando.
