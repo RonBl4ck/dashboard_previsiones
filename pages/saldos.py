@@ -1,220 +1,243 @@
 """
 Página de Saldos y Ajustes
-Permite cargar saldos y priorizar materiales por saldo disponible
+Permite gestionar stock, compararlo con previsiones y ejecución real.
 """
 
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
-import numpy as np
 import sys
+import numpy as np
+from utils.google_sheets_helper import get_saldos_data, update_saldos_batch
+# Reutilizamos load_ejecutado para no duplicar código
+from pages.prevision_vs_real import load_ejecutado
 
 sys.path.append('..')
 
-
-def _build_demo_saldos(df_filtered):
-    base = df_filtered.groupby('DESCRIPCION').agg({
-        'UNIDAD': 'first',
-        'P.U. s/.': 'first'
-    }).reset_index()
-    np.random.seed(42)
-    base['Saldo'] = np.random.uniform(50, 5000, len(base))
-    base['Valor_Saldo'] = base['Saldo'] * base['P.U. s/.'].fillna(0)
-    return base[['DESCRIPCION', 'UNIDAD', 'Saldo', 'Valor_Saldo']]
-
-
-def show(df, apply_filters):
+def show(df_previsiones, apply_filters):
     """Función principal de la página de Saldos y Ajustes"""
 
-    st.title("📦 Saldos y Ajustes")
+    st.title("📦 Control de Saldos e Inventario")
     st.markdown("---")
 
-    df_filtered = apply_filters(df)
+    df_filtered = apply_filters(df_previsiones)
     if df_filtered.empty:
-        st.warning("No hay datos con los filtros seleccionados")
+        st.warning("No hay datos de previsión con los filtros seleccionados")
         return
 
-    st.markdown("""
-    <div style="background-color: #E9ECEF; padding: 15px; border-radius: 10px; margin-bottom: 20px;">
-        <p style="margin: 0;">Esta sección se enfoca solo en los <strong>saldos disponibles</strong> para identificar
-        qué materiales conviene priorizar por volumen de stock.</p>
-    </div>
-    """, unsafe_allow_html=True)
+    # --- 1. CARGA DE DATOS (PREVISIÓN, EJECUTADO, SALDOS) ---
+    with st.spinner("Cargando datos del inventario y ejecución..."):
+        # Obtener Saldos de Sheets
+        df_saldos_sheets = get_saldos_data()
+        
+        # Obtener Ejecutado 
+        df_ejecutado_raw = load_ejecutado()
+        df_ejec_material = pd.DataFrame(columns=['Matricula_Original', 'Real_Total', 'Precio_Total'])
 
-    st.subheader("📁 Cargar Archivo de Saldos")
-    st.markdown("""
-    **Formato esperado del archivo:**
-    - Columna de identificación: DESCRIPCION, Matricula, Matrícula o Material
-    - Columna de saldo: Saldo, Stock, Cantidad o Cantidad_Disponible
-    - Columnas opcionales: UNIDAD, Valor_Saldo
-    - Formato: Excel (.xlsx) o CSV
-    """)
+        if df_ejecutado_raw is not None and not df_ejecutado_raw.empty:
+            # Procesar ejecutado (similar pero simplificado de prevision_vs_real)
+            if 'Fecha de Asignacion' in df_ejecutado_raw.columns:
+                id_col = 'Mat./Prest.' if 'Mat./Prest.' in df_ejecutado_raw.columns else 'Matricula'
+                val_col = 'Cantidad'
+                price_col = 'Precio total eD'
+                
+                if val_col in df_ejecutado_raw.columns and price_col in df_ejecutado_raw.columns:
+                    t_df = df_ejecutado_raw.copy()
+                    
+                    # Limpiar columnas
+                    t_df[id_col] = t_df[id_col].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+                    
+                    cant_clean = t_df[val_col].astype(str).str.replace(',', '.', regex=False)
+                    t_df['Cant_Num'] = pd.to_numeric(cant_clean, errors='coerce').fillna(0)
+                    
+                    price_clean = t_df[price_col].astype(str).str.replace(r'^S/\s*', '', regex=True).str.replace(',', '.', regex=False)
+                    t_df['Price_Num'] = pd.to_numeric(price_clean, errors='coerce').fillna(0)
+                    
+                    # Agrupar por material total del año
+                    df_ejec_material = t_df.groupby(id_col).agg({
+                        'Cant_Num': 'sum',
+                        'Price_Num': 'sum'
+                    }).reset_index()
+                    df_ejec_material.columns = ['Matricula_Original', 'Real_Total', 'Precio_Total']
 
-    uploaded_file = st.file_uploader(
-        "Seleccionar archivo de saldos:",
-        type=['xlsx', 'csv'],
-        help="Sube un archivo Excel o CSV con los saldos disponibles"
-    )
-    use_demo = st.checkbox("Usar datos de demostración (simular saldos)", value=False)
-
-    df_saldos = None
-    if uploaded_file is not None:
-        try:
-            if uploaded_file.name.endswith('.csv'):
-                df_saldos = pd.read_csv(uploaded_file)
-            else:
-                df_saldos = pd.read_excel(uploaded_file)
-            st.success(f"✅ Archivo cargado: {uploaded_file.name}")
-            with st.expander("Vista previa del archivo de saldos"):
-                st.dataframe(df_saldos.head(10), use_container_width=True, hide_index=True)
-        except Exception as e:
-            st.error(f"Error al cargar el archivo: {e}")
-            return
-    elif use_demo:
-        df_saldos = _build_demo_saldos(df_filtered)
-        st.success(f"✅ Saldos simulados para {len(df_saldos)} materiales")
-
-    st.markdown("---")
-    if df_saldos is None:
-        st.info("👉 Carga un archivo de saldos o activa los datos de demostración para ver el análisis.")
-        return
-
-    col_material = next((col for col in ['DESCRIPCION', 'Matricula', 'Matrícula', 'Material'] if col in df_saldos.columns), None)
-    col_saldo = next((col for col in ['Saldo', 'Stock', 'Cantidad', 'Cantidad_Disponible'] if col in df_saldos.columns), None)
-    col_unidad = next((col for col in ['UNIDAD', 'Unidad'] if col in df_saldos.columns), None)
-    col_valor = next((col for col in ['Valor_Saldo', 'Valor', 'Monto'] if col in df_saldos.columns), None)
-
-    if col_material is None or col_saldo is None:
-        st.error("El archivo debe contener al menos una columna de material y una columna de saldo.")
-        return
-
-    saldo_df = df_saldos.copy()
-    saldo_df = saldo_df.rename(columns={col_material: 'Material', col_saldo: 'Saldo'})
-    if col_unidad:
-        saldo_df = saldo_df.rename(columns={col_unidad: 'Unidad'})
+    # --- 2. PREPARACIÓN Y MERGE DE DATOS ---
+    
+    # Previsiones (Agrupar por material único)
+    mat_col = 'Matricula_Clean' if 'Matricula_Clean' in df_filtered.columns else 'Matricula'
+    
+    meses_cant = [f'Cant_{m}' for m in ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']]
+    meses_val = [f'Valor_{m}' for m in ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']]
+    
+    agg_dict = {
+        'DESCRIPCION': 'first',
+        'UNIDAD': 'first',
+        'P.U. s/.': 'first',
+        'Hist_2025': 'sum' if 'Hist_2025' in df_filtered.columns else 'first'
+    }
+    
+    for m in meses_cant:
+        if m in df_filtered.columns: agg_dict[m] = 'sum'
+    for m in meses_val:
+        if m in df_filtered.columns: agg_dict[m] = 'sum'
+        
+    df_prev_grouped = df_filtered.groupby(mat_col).agg(agg_dict).reset_index()
+    
+    # Calcular totales previstos
+    df_prev_grouped['Total_Prev_Cant'] = df_prev_grouped[[m for m in meses_cant if m in df_prev_grouped.columns]].sum(axis=1)
+    df_prev_grouped['Total_Prev_Val'] = df_prev_grouped[[m for m in meses_val if m in df_prev_grouped.columns]].sum(axis=1)
+    
+    if 'Hist_2025' not in df_prev_grouped.columns:
+        df_prev_grouped['Hist_2025'] = 0
+        
+    df_prev_grouped.rename(columns={mat_col: 'Matricula'}, inplace=True)
+    
+    # Cruce Principal (Previsión + Ejecutado + Saldos)
+    df_master = df_prev_grouped.copy()
+    
+    # Unir Ejecutado
+    if not df_ejec_material.empty:
+        df_master = pd.merge(df_master, df_ejec_material, left_on='Matricula', right_on='Matricula_Original', how='left')
+        df_master['Real_Total'] = df_master['Real_Total'].fillna(0)
+        df_master['Precio_Total'] = df_master['Precio_Total'].fillna(0)
     else:
-        saldo_df['Unidad'] = ''
-
-    saldo_df['Material'] = saldo_df['Material'].astype(str).str.strip()
-    saldo_df['Saldo'] = pd.to_numeric(saldo_df['Saldo'], errors='coerce').fillna(0)
-    saldo_df = saldo_df[saldo_df['Saldo'] > 0].copy()
-
-    if col_valor:
-        saldo_df = saldo_df.rename(columns={col_valor: 'Valor_Saldo'})
-        saldo_df['Valor_Saldo'] = pd.to_numeric(saldo_df['Valor_Saldo'], errors='coerce').fillna(0)
+        df_master['Real_Total'] = 0
+        df_master['Precio_Total'] = 0
+        
+    # Unir Saldos
+    if not df_saldos_sheets.empty:
+        df_master = pd.merge(df_master, df_saldos_sheets, on='Matricula', how='left')
+        df_master['Stock'] = df_master['Stock'].fillna(0)
+        df_master['Visible'] = df_master['Visible'].fillna(False)
+        df_master['Anotacion'] = df_master['Anotacion'].fillna('')
+        df_master['Valor_Manual'] = pd.to_numeric(df_master['Valor_Manual'], errors='coerce')
     else:
-        saldo_df['Valor_Saldo'] = saldo_df['Saldo']
+        df_master['Stock'] = 0
+        df_master['Visible'] = False
+        df_master['Anotacion'] = ''
+        df_master['Valor_Manual'] = np.nan
+        
+    # Variables de UI en State
+    if 'saldos_df' not in st.session_state:
+        st.session_state['saldos_df'] = df_saldos_sheets
 
-    saldo_df = saldo_df.groupby(['Material', 'Unidad'], dropna=False).agg({
-        'Saldo': 'sum',
-        'Valor_Saldo': 'sum'
-    }).reset_index()
+    # --- 3. PANEL DE GESTIÓN (POPOVER) ---
+    col_pop, col_space = st.columns([1, 4])
+    with col_pop:
+        with st.popover("⚙️ Gestionar Materiales", use_container_width=True):
+            st.markdown("### Buscar y Editar Stock")
+            
+            opciones_mat = df_master['Matricula'] + " - " + df_master['DESCRIPCION'].str[:40]
+            mat_dict = dict(zip(opciones_mat, df_master['Matricula']))
+            
+            selected_op = st.selectbox("Buscar material:", [""] + list(opciones_mat), index=0)
+            
+            if selected_op and selected_op != "":
+                sel_mat_id = mat_dict[selected_op]
+                row_data = df_master[df_master['Matricula'] == sel_mat_id].iloc[0]
+                
+                unidad_txt = row_data.get('UNIDAD', 'Unid')
+                pu_txt = row_data.get('P.U. s/.', 0)
+                
+                st.info(f"**{row_data['DESCRIPCION']}**\n\nUnidad: {unidad_txt} | P.U.: S/ {pu_txt:,.2f}")
+                
+                with st.form(key=f"form_stock_{sel_mat_id}"):
+                    curr_stock = float(row_data['Stock'])
+                    curr_visible = bool(row_data['Visible'])
+                    curr_val_man = row_data['Valor_Manual'] if pd.notna(row_data['Valor_Manual']) else 0.0
+                    curr_anot = str(row_data['Anotacion'])
+                    
+                    new_stock = st.number_input(f"Stock Disponible ({unidad_txt})", value=curr_stock, min_value=0.0, step=1.0)
+                    
+                    is_manual = st.checkbox("Usar Valor Manual (S/.) en lugar de calcularlo del P.U.", value=pd.notna(row_data['Valor_Manual']))
+                    new_val_man = st.number_input("Valor Manual (S/.)", value=float(curr_val_man) if pd.notna(row_data['Valor_Manual']) else 0.0, disabled=not is_manual)
+                    
+                    new_anot = st.text_input("Anotación (Aparecerá con un *)", value=curr_anot)
+                    new_visible = st.checkbox("Mostrar en la tabla principal", value=curr_visible)
+                    
+                    if st.form_submit_button("Guardar en Sheets", type="primary"):
+                        # Actualizar estado local
+                        s_df = st.session_state['saldos_df']
+                        idx = s_df[s_df['Matricula'] == sel_mat_id].index
+                        
+                        final_val_man = new_val_man if is_manual else ""
+                        
+                        if len(idx) > 0:
+                            s_df.loc[idx, 'Stock'] = new_stock
+                            s_df.loc[idx, 'Visible'] = new_visible
+                            s_df.loc[idx, 'Anotacion'] = new_anot
+                            s_df.loc[idx, 'Valor_Manual'] = final_val_man
+                        else:
+                            new_row = pd.DataFrame([{
+                                'Matricula': sel_mat_id,
+                                'Stock': new_stock,
+                                'Valor_Manual': final_val_man,
+                                'Visible': new_visible,
+                                'Anotacion': new_anot
+                            }])
+                            s_df = pd.concat([s_df, new_row], ignore_index=True)
+                        
+                        st.session_state['saldos_df'] = s_df
+                        
+                        # Subir a Google Sheets en batch
+                        if update_saldos_batch(s_df):
+                            st.success("✅ ¡Guardado!")
+                            st.rerun()
 
-    total_saldo = saldo_df['Saldo'].sum()
-    total_items = len(saldo_df)
-    saldo_max = saldo_df['Saldo'].max() if not saldo_df.empty else 0
-    material_top = saldo_df.sort_values('Saldo', ascending=False).iloc[0]['Material'] if not saldo_df.empty else 'N/A'
-
-    st.subheader("📊 Resumen General")
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Saldo Total", f"{total_saldo:,.0f}")
-    with col2:
-        st.metric("Materiales con Saldo", f"{total_items}")
-    with col3:
-        st.metric("Saldo Máximo", f"{saldo_max:,.0f}")
-    with col4:
-        st.metric("Material Prioritario", material_top[:24] + ("..." if len(material_top) > 24 else ""))
-
-    st.markdown("---")
-
-    material_focus = st.selectbox(
-        "Destacar material",
-        ['Ninguno'] + saldo_df['Material'].astype(str).tolist(),
-        key='focus_saldos_material'
+    # --- 4. PREPARAR TABLA PRINCIPAL ---
+    
+    # Filtrar solo visibles
+    df_tabla = df_master[df_master['Visible'] == True].copy()
+    
+    if df_tabla.empty:
+        st.info("No hay materiales marcados para mostrarse en el cuadro principal. Usa el botón 'Gestionar Materiales' para agregar algunos.")
+        return
+        
+    # Calcular Valor S/. Stock
+    df_tabla['Stock_Valor'] = df_tabla.apply(
+        lambda r: r['Valor_Manual'] if pd.notna(r['Valor_Manual']) and str(r['Valor_Manual']) != '' 
+                  else r['Stock'] * r['P.U. s/.'], 
+        axis=1
     )
-
-    plot_df = saldo_df[['Material', 'Saldo', 'Valor_Saldo']].sort_values('Saldo', ascending=False)
-    top_plot = plot_df.head(10).copy()
-    restantes = plot_df.iloc[10:].copy()
-    if material_focus != 'Ninguno' and material_focus in restantes['Material'].values:
-        selected_row = restantes[restantes['Material'] == material_focus]
-        top_plot = pd.concat([top_plot, selected_row], ignore_index=True)
-
-    top_plot = top_plot.sort_values('Saldo', ascending=True)
-    colors = [
-        '#E94F37' if name == material_focus else '#1B3F66'
-        for name in top_plot['Material']
-    ]
-
-    st.subheader("📈 Materiales con Mayor Saldo")
-    fig_top = go.Figure(go.Bar(
-        x=top_plot['Saldo'],
-        y=top_plot['Material'].str[:45],
-        orientation='h',
-        marker_color=colors,
-        text=[f"{v:,.0f}" for v in top_plot['Saldo']],
-        textposition='outside',
-        customdata=top_plot[['Valor_Saldo']].to_numpy(),
-        hovertemplate='<b>%{y}</b><br>Saldo: %{x:,.0f}<br>Valor: S/ %{customdata[0]:,.0f}<extra></extra>'
-    ))
-    fig_top.update_layout(
-        xaxis_title='Saldo',
-        margin=dict(t=30, b=20, l=20, r=20),
-        height=360,
-        showlegend=False
+    
+    # Añadir * a las descripciones con anotación
+    df_tabla['Desc_Display'] = df_tabla.apply(
+        lambda r: r['DESCRIPCION'] + " *" if r['Anotacion'].strip() != '' else r['DESCRIPCION'], 
+        axis=1
     )
-    st.plotly_chart(fig_top, use_container_width=True)
-
-    st.subheader("📚 Distribución de Saldo")
-    fig_dist = px.bar(
-        saldo_df.sort_values('Saldo', ascending=False).head(15),
-        x='Saldo',
-        y=saldo_df.sort_values('Saldo', ascending=False).head(15)['Material'].str[:40],
-        orientation='h',
-        color='Saldo',
-        color_continuous_scale='Blues'
+    
+    # Armar Dataframe Final con P.U. limpio
+    df_display = pd.DataFrame({
+        'Material': df_tabla['Matricula'],
+        'Descripción': df_tabla['Desc_Display'],
+        'Stock': df_tabla['Stock'],
+        'S/.': df_tabla['Stock_Valor'],
+        '2025': df_tabla['Hist_2025'],
+        '2026 Prev.': df_tabla['Total_Prev_Cant'],
+        'S/. ': df_tabla['Total_Prev_Val'],  # Espacio para no duplicar key dict
+        '2026 Emit.': df_tabla['Real_Total'],
+        'S/.  ': df_tabla['Precio_Total']  # Dos espacios
+    })
+    
+    # Mostrar tabla principal
+    st.dataframe(
+        df_display,
+        use_container_width=True,
+        hide_index=True,
+        height=500,
+        column_config={
+            'Stock': st.column_config.NumberColumn(format="%.2f"),
+            'S/.': st.column_config.NumberColumn(format="%.2f"),
+            '2025': st.column_config.NumberColumn(format="%.2f"),
+            '2026 Prev.': st.column_config.NumberColumn(format="%.2f"),
+            'S/. ': st.column_config.NumberColumn("S/.", format="%.2f"),
+            '2026 Emit.': st.column_config.NumberColumn(format="%.2f"),
+            'S/.  ': st.column_config.NumberColumn("S/.", format="%.2f"),
+        }
     )
-    fig_dist.update_layout(
-        xaxis_title='Saldo',
-        yaxis_title='',
-        margin=dict(t=30, b=20, l=20, r=20),
-        height=420
-    )
-    st.plotly_chart(fig_dist, use_container_width=True)
-
-    st.markdown("---")
-    st.subheader("📋 Detalle Completo de Saldos")
-    with st.expander("Ver detalle completo de materiales con saldo"):
-        st.dataframe(
-            saldo_df.sort_values('Saldo', ascending=False),
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                'Saldo': st.column_config.NumberColumn(format="%.0f"),
-                'Valor_Saldo': st.column_config.NumberColumn(format="%.0f")
-            }
-        )
-
-    st.markdown("---")
-    col1, col2, col3 = st.columns([1, 1, 1])
-    with col2:
-        st.download_button(
-            label="📥 Exportar Saldos",
-            data=exportar_analisis(saldo_df).getvalue(),
-            file_name="analisis_saldos.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
-
-
-def exportar_analisis(df_export):
-    """Exporta el análisis a Excel"""
-    from io import BytesIO
-
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_export.to_excel(writer, sheet_name='Saldos', index=False)
-    output.seek(0)
-    return output
+    
+    # --- 5. LEYENDA Y NOTAS AL PIE ---
+    con_notas = df_tabla[df_tabla['Anotacion'].str.strip() != '']
+    if not con_notas.empty:
+        st.markdown("---")
+        st.markdown("### * Notas y Anotaciones")
+        for idx, row in con_notas.iterrows():
+            st.markdown(f"- **{row['Matricula']}**: {row['Anotacion']}")

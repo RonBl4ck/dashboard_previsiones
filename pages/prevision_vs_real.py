@@ -8,6 +8,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
 import sys
+import difflib
 
 sys.path.append('..')
 
@@ -605,53 +606,141 @@ def show(df, apply_filters):
         )
 
     with tab_auditoria:
-        st.subheader("📋 Materiales Fuera de Programa")
-        st.caption("Estos materiales se encuentran en el archivo 'EJECUTADO' pero NO están en la Previsión 2026.")
+        st.subheader("📋 Auditoría de Materiales")
+        st.caption("Gestión de materiales en 'EJECUTADO' que no están en la Previsión 2026.")
         
         if 'df_real_unmapped' in locals() and not df_real_unmapped.empty:
-            # Agrupar por material y proyecto para la auditoría
-            audit_index = ['Mat_Code_Temp']
-            if proyecto_col:
-                audit_index.append(proyecto_col)
+            # --- VISTA MAESTRO ---
+            # Agrupamos para tener totales por material y conteo de proyectos
+            master_index = 'Mat_Code_Temp'
+            df_master = df_real_unmapped.groupby(master_index).agg({
+                'Real_Value': 'sum',
+                proyecto_col if proyecto_col else master_index: 'nunique'
+            }).reset_index()
             
-            df_audit = df_real_unmapped.groupby(audit_index)['Real_Value'].sum().reset_index()
-            df_audit.columns = ['Material', 'Proyecto', 'Total Emitido'] if proyecto_col else ['Material', 'Total Emitido']
-            df_audit['Tener en cuenta'] = False
-            
-            edited_audit = st.data_editor(
-                df_audit,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Total Emitido": st.column_config.NumberColumn(format="S/ %.0f"),
-                    "Tener en cuenta": st.column_config.CheckboxColumn(
-                        "Tener en cuenta",
-                        help="Marca para incluir en el reporte de exportación",
-                        default=False
-                    )
-                }
-            )
-            
-            # Exportación de lo seleccionado
-            seleccionados = edited_audit[edited_audit['Tener en cuenta'] == True]
-            if not seleccionados.empty:
-                from io import BytesIO
-                
-                def to_excel_audit(df_sel):
-                    output = BytesIO()
-                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                        df_sel.to_excel(writer, index=False, sheet_name='Fuera de Programa')
-                    return output.getvalue()
-                
-                st.download_button(
-                    label="📥 Descargar Reporte de Materiales a Tener en Cuenta",
-                    data=to_excel_audit(seleccionados),
-                    file_name="materiales_fuera_de_prevision.xlsx",
-                    mime="application/vnd.ms-excel",
+            df_master.columns = ['Material', 'Total Emitido', 'N° Proyectos']
+            df_master = df_master.sort_values('Total Emitido', ascending=False)
+
+            col_m1, col_m2 = st.columns([1, 1])
+            with col_m1:
+                st.write("**Resumen de Materiales Fuera de Programa**")
+                st.dataframe(
+                    df_master,
                     use_container_width=True,
-                    type="primary"
+                    hide_index=True,
+                    column_config={
+                        "Total Emitido": st.column_config.NumberColumn(format="S/ %.0f"),
+                        "N° Proyectos": st.column_config.NumberColumn(format="%.0f")
+                    }
                 )
-            else:
-                st.info("Marca los materiales en la columna 'Tener en cuenta' para generar un reporte descargable.")
+            
+            with col_m2:
+                selected_material = st.selectbox(
+                    "🔍 Selecciona un material para ver proyectos:",
+                    df_master['Material'].tolist(),
+                    help="Escribe para buscar un material específico"
+                )
+                
+                # --- SUGERENCIA DE MAPEO (FUZZY MATCHING) ---
+                if selected_material:
+                    # Buscamos coincidencias cercanas en la lista de materiales válidos
+                    if 'materiales_validos' in locals() and materiales_validos:
+                        lista_validos = list(materiales_validos)
+                        # Intentar encontrar descripciones similares si el ID no es suficiente
+                        # Pero por ahora usamos la lista directa de IDs válidos
+                        matches = difflib.get_close_matches(str(selected_material), lista_validos, n=1, cutoff=0.7)
+                        
+                        if matches:
+                            st.info(f"💡 **Sugerencia de Mapeo:** ¿Podría ser este material?: `{matches[0]}`")
+                            st.caption("Si el código es similar, podrías corregirlo en la fuente de datos para que se asocie correctamente.")
+                        else:
+                            st.warning("⚠️ No se encontraron materiales similares en la previsión.")
+
+            st.markdown("---")
+            
+            # --- VISTA DETALLE ---
+            if selected_material:
+                st.write(f"**Detalle de Proyectos para:** `{selected_material}`")
+                
+                # Filtrar detalle para el material seleccionado
+                df_detail = df_real_unmapped[df_real_unmapped[master_index] == selected_material].copy()
+                
+                if proyecto_col:
+                    df_detail_grouped = df_detail.groupby(proyecto_col)['Real_Value'].sum().reset_index()
+                    df_detail_grouped.columns = ['Proyecto', 'Total Emitido']
+                else:
+                    df_detail_grouped = df_detail.groupby(master_index)['Real_Value'].sum().reset_index()
+                    df_detail_grouped.columns = ['Material', 'Total Emitido']
+
+                # Inicializar estado de justificaciones si no existe
+                if 'dict_justificaciones' not in st.session_state:
+                    st.session_state['dict_justificaciones'] = {}
+
+                # Añadir columna de justificación desde el estado
+                df_detail_grouped['Justificación'] = df_detail_grouped.apply(
+                    lambda x: st.session_state['dict_justificaciones'].get(f"{selected_material}_{x[0]}", ""), axis=1
+                )
+                df_detail_grouped['Tener en cuenta'] = False
+
+                edited_detail = st.data_editor(
+                    df_detail_grouped,
+                    use_container_width=True,
+                    hide_index=True,
+                    key=f"editor_{selected_material}",
+                    column_config={
+                        "Total Emitido": st.column_config.NumberColumn(format="S/ %.0f"),
+                        "Justificación": st.column_config.TextColumn("Justificación", help="Escribe la razón de este consumo extra"),
+                        "Tener en cuenta": st.column_config.CheckboxColumn("Tener en cuenta")
+                    }
+                )
+
+                # Guardar cambios en el diccionario global (manual trigger no es necesario con edits instantáneos en dict)
+                # Actualizar el diccionario con lo editado
+                for idx, row in edited_detail.iterrows():
+                    key = f"{selected_material}_{row[df_detail_grouped.columns[0]]}"
+                    st.session_state['dict_justificaciones'][key] = row['Justificación']
+
+                # --- EXPORTACIÓN ---
+                # Recopilar todo lo marcado para exportar
+                # Nota: Para exportar 'todo' el reporte con sus justificaciones, 
+                # tendríamos que reconstruir la tabla audit completa.
+                
+                st.subheader("📥 Exportar Reporte de Auditoría")
+                col_exp1, col_exp2 = st.columns(2)
+                
+                with col_exp1:
+                    if st.button("Preparar Reporte Completo (Todos los materiales)", use_container_width=True):
+                        # Reconstruir tabla de auditoría completa con justificaciones
+                        audit_full_index = [master_index]
+                        if proyecto_col: audit_full_index.append(proyecto_col)
+                        
+                        df_full_audit = df_real_unmapped.groupby(audit_full_index)['Real_Value'].sum().reset_index()
+                        df_full_audit.columns = ['Material', 'Proyecto', 'Total Emitido'] if proyecto_col else ['Material', 'Total Emitido']
+                        
+                        df_full_audit['Justificación'] = df_full_audit.apply(
+                            lambda x: st.session_state['dict_justificaciones'].get(f"{x['Material']}_{x['Proyecto'] if proyecto_col else x['Material']}", ""), 
+                            axis=1
+                        )
+                        
+                        st.session_state['last_full_audit'] = df_full_audit
+                        st.success("Reporte preparado con éxito.")
+
+                with col_exp2:
+                    if 'last_full_audit' in st.session_state:
+                         from io import BytesIO
+                         def to_excel_audit(df_sel):
+                            output = BytesIO()
+                            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                                df_sel.to_excel(writer, index=False, sheet_name='Fuera de Programa')
+                            return output.getvalue()
+                         
+                         st.download_button(
+                            label="📥 Descargar Excel",
+                            data=to_excel_audit(st.session_state['last_full_audit']),
+                            file_name="auditoria_materiales_fuera_programa.xlsx",
+                            mime="application/vnd.ms-excel",
+                            use_container_width=True,
+                            type="primary"
+                         )
         else:
             st.success("✅ ¡Perfecto! Todos los materiales emitidos se encuentran en la previsión.")
