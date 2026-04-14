@@ -92,6 +92,10 @@ def show(df, apply_filters):
 
     df_comparison = df_filtered.copy()
     real_mode = None
+    _audit_desc_map = {}
+    _audit_qty_master = pd.DataFrame(columns=['Material', 'Total Cantidad', 'N° Proyectos'])
+    _audit_qty_detail = None
+    _has_audit_qty = False
     meses = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
     meses_prev = [f'Valor_{m}' for m in meses]
     meses_real = [f'Real_{m}' for m in meses]
@@ -168,6 +172,31 @@ def show(df, apply_filters):
             # Como la coma representa decimales ahora, sustituimos comas por puntos para Python
             cleaned_val = cleaned_val.str.replace(',', '.', regex=False).str.strip()
             trans_df[val_col] = pd.to_numeric(cleaned_val, errors='coerce').fillna(0)
+
+            # --- Datos para Auditoría (siempre cantidad + descripción) ---
+            # Buscar columna de descripción con coincidencia flexible
+            _audit_desc_col = None
+            for c in trans_df.columns:
+                cl = c.lower()
+                if 'breve' in cl or 'descripci' in cl or 'description' in cl or cl == 'descripcion' or cl == 'desc':
+                    _audit_desc_col = c
+                    break
+            if _audit_desc_col:
+                _temp_codes = trans_df[id_source_col].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+                for code, desc in zip(_temp_codes, trans_df[_audit_desc_col].astype(str)):
+                    if code not in _audit_desc_map:
+                        _audit_desc_map[code] = desc
+
+            # Siempre preparar columna de cantidad para auditoría
+            if 'Cantidad' in trans_df.columns:
+                if val_col != 'Cantidad':
+                    _aud_cant = trans_df['Cantidad'].astype(str).str.replace(',', '.', regex=False).str.strip()
+                    trans_df['_Audit_Qty'] = pd.to_numeric(_aud_cant, errors='coerce').fillna(0)
+                else:
+                    trans_df['_Audit_Qty'] = trans_df[val_col]
+            else:
+                trans_df['_Audit_Qty'] = 0
+            _has_audit_qty = True
 
             # Detectar si hay columna de proyecto
             cols_proyecto_posibles = ['Codigo del Proyecto', 'Proyecto', 'Elemento PEP', 'Nombre del proyecto']
@@ -270,6 +299,29 @@ def show(df, apply_filters):
         df_real_mapped.drop(columns=['Mat_Code_Temp'], inplace=True)
         # -------------------------------
 
+        # --- Pre-agregar datos de auditoría por cantidad ---
+        if _has_audit_qty and not df_real_unmapped.empty:
+            _unmapped_codes = set(df_real_unmapped['Mat_Code_Temp'].unique())
+            _trans_mat_clean = trans_df[id_source_col].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+            _mask_unmap = _trans_mat_clean.isin(_unmapped_codes)
+            _trans_unmapped = trans_df[_mask_unmap].copy()
+            _trans_unmapped['_mat_code'] = _trans_mat_clean[_mask_unmap].values
+
+            _agg_d = {'_Audit_Qty': 'sum'}
+            if proyecto_col_trans:
+                _agg_d[proyecto_col_trans] = 'nunique'
+
+            _audit_qty_master = _trans_unmapped.groupby('_mat_code').agg(_agg_d).reset_index()
+            if proyecto_col_trans:
+                _audit_qty_master.columns = ['Material', 'Total Cantidad', 'N° Proyectos']
+            else:
+                _audit_qty_master.columns = ['Material', 'Total Cantidad']
+                _audit_qty_master['N° Proyectos'] = 1
+
+            if proyecto_col_trans:
+                _audit_qty_detail = _trans_unmapped.groupby(['_mat_code', proyecto_col_trans])['_Audit_Qty'].sum().reset_index()
+                _audit_qty_detail.columns = ['Material', 'Proyecto', 'Total Cantidad']
+
         if proyecto_col and 'Codigo del Proyecto' in df_comparison.columns:
             # Join row by row to df_comparison
             # Pivotar incluyendo Matricula_Original para el cruce si existe
@@ -339,7 +391,10 @@ def show(df, apply_filters):
         real_mensual = [df_real_material[mr].sum() if mr in df_real_material.columns else 0 for mr in meses_real]
 
     # meses_prev y meses_real acotados a los meses con datos
-    meses_prev_activos = [f'Valor_{m}' for m in meses_con_datos]
+    if tipo_comparacion == "Cantidad Física":
+        meses_prev_activos = [f'Cant_{m}' for m in meses_con_datos]
+    else:
+        meses_prev_activos = [f'Valor_{m}' for m in meses_con_datos]
     meses_real_activos = [f'Real_{m}' for m in meses_con_datos]
 
     total_prev = sum(prevision_mensual)
@@ -372,11 +427,13 @@ def show(df, apply_filters):
 
     with tab_resumen:
         st.subheader("📊 Métricas de Emisión")
+        _unit = "S/" if tipo_comparacion != "Cantidad Física" else "Cant."
+        _y_label = "Valor (S/.)" if tipo_comparacion != "Cantidad Física" else "Cantidad"
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Previsión (Activo)", f"S/ {total_prev:,.0f}", help="Suma de previsión solo de los meses que tienen consumo real")
+            st.metric("Previsión (Activo)", f"{_unit} {total_prev:,.0f}", help="Suma de previsión solo de los meses que tienen consumo real")
         with col2:
-            st.metric("Emitido", f"S/ {total_real:,.0f}")
+            st.metric("Emitido", f"{_unit} {total_real:,.0f}")
         with col3:
             diff = total_real - total_prev
             color = "#E94F37" if diff > 0 else "#2ECC71"
@@ -385,14 +442,14 @@ def show(df, apply_filters):
             st.markdown(f"""
                 <div style="background-color: white; padding: 5px 12px; border-radius: 8px; border-left: 5px solid {color}; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); height: 85px; display: flex; flex-direction: column; justify-content: center;">
                     <div style="color: #666; font-size: 0.85rem; line-height: 1.2;">Diferencia (vs Activo)</div>
-                    <div style="color: {color}; font-size: 1.5rem; font-weight: bold; margin-top: 4px;">{symbol} S/ {abs(diff):,.0f}</div>
+                    <div style="color: {color}; font-size: 1.5rem; font-weight: bold; margin-top: 4px;">{symbol} {_unit} {abs(diff):,.0f}</div>
                 </div>
             """, unsafe_allow_html=True)
         col4, col5 = st.columns(2)
         with col4:
             st.metric("% Emitido (Mensual)", f"{emision:.1f}%", help="Porcentaje emitido vs previsión de los meses activos")
         with col5:
-            st.metric("% Emitido (Anual)", f"{emision_anual:.1f}%", help=f"Emisión total vs Previsión de Todo el Año (S/ {total_prev_anual:,.0f})")
+            st.metric("% Emitido (Anual)", f"{emision_anual:.1f}%", help=f"Emisión total vs Previsión de Todo el Año ({_unit} {total_prev_anual:,.0f})")
 
         col_chart, col_desv = st.columns([2, 1])
         with col_chart:
@@ -419,7 +476,7 @@ def show(df, apply_filters):
             fig_comp.update_layout(
                 barmode='group',
                 xaxis_title='Mes',
-                yaxis_title='Valor (MS/.)',
+                yaxis_title=_y_label,
                 margin=dict(t=50, b=50, l=60, r=20),
                 height=430,
                 legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5),
@@ -444,7 +501,7 @@ def show(df, apply_filters):
             fig_desv.add_hline(y=0, line_dash="dash", line_color="gray")
             fig_desv.update_layout(
                 xaxis_title='Mes',
-                yaxis_title='Desviación (MS/.)',
+                yaxis_title=_y_label,
                 margin=dict(t=30, b=30, l=60, r=20),
                 height=330,
                 showlegend=False
@@ -487,7 +544,7 @@ def show(df, apply_filters):
             fig_proy.update_layout(
                 barmode='group',
                 xaxis_title='Mes',
-                yaxis_title='Valor (MS/.)',
+                yaxis_title=_y_label,
                 height=410,
                 margin=dict(t=40, b=40, l=60, r=20),
                 uniformtext_minsize=8,
@@ -548,7 +605,7 @@ def show(df, apply_filters):
             fig_mat.update_layout(
                 barmode='group',
                 xaxis_title='Mes',
-                yaxis_title='Valor (MS/.)',
+                yaxis_title=_y_label,
                 height=390,
                 margin=dict(t=40, b=40, l=60, r=20),
                 uniformtext_minsize=8,
@@ -607,49 +664,50 @@ def show(df, apply_filters):
 
     with tab_auditoria:
         st.subheader("📋 Auditoría de Materiales")
-        st.caption("Gestión de materiales en 'EJECUTADO' que no están en la Previsión 2026.")
-        
-        if 'df_real_unmapped' in locals() and not df_real_unmapped.empty:
-            # --- VISTA MAESTRO ---
-            # Agrupamos para tener totales por material y conteo de proyectos
-            master_index = 'Mat_Code_Temp'
-            df_master = df_real_unmapped.groupby(master_index).agg({
-                'Real_Value': 'sum',
-                proyecto_col if proyecto_col else master_index: 'nunique'
-            }).reset_index()
-            
-            df_master.columns = ['Material', 'Total Emitido', 'N° Proyectos']
-            df_master = df_master.sort_values('Total Emitido', ascending=False)
+        st.caption("Gestión de materiales en 'EJECUTADO' que no están en la Previsión 2026. (Siempre por Cantidad Física)")
+
+        if not _audit_qty_master.empty:
+            df_master_audit = _audit_qty_master.copy()
+
+            # Añadir columna de descripción
+            # Fallback: si no se encontró descripción en EJECUTADO, usar mapeo de la previsión
+            _desc_source = _audit_desc_map
+            if not _desc_source and 'mat_to_desc' in dir():
+                _desc_source = mat_to_desc
+            if _desc_source:
+                df_master_audit.insert(1, 'Descripción', df_master_audit['Material'].map(_desc_source).fillna(''))
+            if not _desc_source:
+                if '_audit_all_cols' in dir():
+                    st.caption(f"ℹ️ No se encontró columna de descripción en EJECUTADO. Columnas: {_audit_all_cols}")
+
+            df_master_audit = df_master_audit.sort_values('Total Cantidad', ascending=False)
 
             col_m1, col_m2 = st.columns([1, 1])
             with col_m1:
                 st.write("**Resumen de Materiales Fuera de Programa**")
                 st.dataframe(
-                    df_master,
+                    df_master_audit,
                     use_container_width=True,
                     hide_index=True,
                     column_config={
-                        "Total Emitido": st.column_config.NumberColumn(format="S/ %.0f"),
+                        "Total Cantidad": st.column_config.NumberColumn(format="%,.0f"),
                         "N° Proyectos": st.column_config.NumberColumn(format="%.0f")
                     }
                 )
-            
+
             with col_m2:
                 selected_material = st.selectbox(
                     "🔍 Selecciona un material para ver proyectos:",
-                    df_master['Material'].tolist(),
+                    df_master_audit['Material'].tolist(),
                     help="Escribe para buscar un material específico"
                 )
-                
+
                 # --- SUGERENCIA DE MAPEO (FUZZY MATCHING) ---
                 if selected_material:
-                    # Buscamos coincidencias cercanas en la lista de materiales válidos
                     if 'materiales_validos' in locals() and materiales_validos:
                         lista_validos = list(materiales_validos)
-                        # Intentar encontrar descripciones similares si el ID no es suficiente
-                        # Pero por ahora usamos la lista directa de IDs válidos
                         matches = difflib.get_close_matches(str(selected_material), lista_validos, n=1, cutoff=0.7)
-                        
+
                         if matches:
                             st.info(f"💡 **Sugerencia de Mapeo:** ¿Podría ser este material?: `{matches[0]}`")
                             st.caption("Si el código es similar, podrías corregirlo en la fuente de datos para que se asocie correctamente.")
@@ -657,20 +715,17 @@ def show(df, apply_filters):
                             st.warning("⚠️ No se encontraron materiales similares en la previsión.")
 
             st.markdown("---")
-            
+
             # --- VISTA DETALLE ---
             if selected_material:
                 st.write(f"**Detalle de Proyectos para:** `{selected_material}`")
-                
-                # Filtrar detalle para el material seleccionado
-                df_detail = df_real_unmapped[df_real_unmapped[master_index] == selected_material].copy()
-                
-                if proyecto_col:
-                    df_detail_grouped = df_detail.groupby(proyecto_col)['Real_Value'].sum().reset_index()
-                    df_detail_grouped.columns = ['Proyecto', 'Total Emitido']
+
+                if _audit_qty_detail is not None:
+                    df_detail_grouped = _audit_qty_detail[_audit_qty_detail['Material'] == selected_material][['Proyecto', 'Total Cantidad']].copy()
                 else:
-                    df_detail_grouped = df_detail.groupby(master_index)['Real_Value'].sum().reset_index()
-                    df_detail_grouped.columns = ['Material', 'Total Emitido']
+                    # Fallback: sin desglose por proyecto
+                    _mat_total = _audit_qty_master[_audit_qty_master['Material'] == selected_material]['Total Cantidad'].sum()
+                    df_detail_grouped = pd.DataFrame([{'Material': selected_material, 'Total Cantidad': _mat_total}])
 
                 # Inicializar estado de justificaciones si no existe
                 if 'dict_justificaciones' not in st.session_state:
@@ -678,7 +733,7 @@ def show(df, apply_filters):
 
                 # Añadir columna de justificación desde el estado
                 df_detail_grouped['Justificación'] = df_detail_grouped.apply(
-                    lambda x: st.session_state['dict_justificaciones'].get(f"{selected_material}_{x[0]}", ""), axis=1
+                    lambda x: st.session_state['dict_justificaciones'].get(f"{selected_material}_{x.iloc[0]}", ""), axis=1
                 )
                 df_detail_grouped['Tener en cuenta'] = False
 
@@ -688,40 +743,38 @@ def show(df, apply_filters):
                     hide_index=True,
                     key=f"editor_{selected_material}",
                     column_config={
-                        "Total Emitido": st.column_config.NumberColumn(format="S/ %.0f"),
+                        "Total Cantidad": st.column_config.NumberColumn(format="%,.0f"),
                         "Justificación": st.column_config.TextColumn("Justificación", help="Escribe la razón de este consumo extra"),
                         "Tener en cuenta": st.column_config.CheckboxColumn("Tener en cuenta")
                     }
                 )
 
-                # Guardar cambios en el diccionario global (manual trigger no es necesario con edits instantáneos en dict)
-                # Actualizar el diccionario con lo editado
+                # Guardar cambios en justificaciones
                 for idx, row in edited_detail.iterrows():
                     key = f"{selected_material}_{row[df_detail_grouped.columns[0]]}"
                     st.session_state['dict_justificaciones'][key] = row['Justificación']
 
                 # --- EXPORTACIÓN ---
-                # Recopilar todo lo marcado para exportar
-                # Nota: Para exportar 'todo' el reporte con sus justificaciones, 
-                # tendríamos que reconstruir la tabla audit completa.
-                
                 st.subheader("📥 Exportar Reporte de Auditoría")
                 col_exp1, col_exp2 = st.columns(2)
-                
+
                 with col_exp1:
                     if st.button("Preparar Reporte Completo (Todos los materiales)", use_container_width=True):
-                        # Reconstruir tabla de auditoría completa con justificaciones
-                        audit_full_index = [master_index]
-                        if proyecto_col: audit_full_index.append(proyecto_col)
-                        
-                        df_full_audit = df_real_unmapped.groupby(audit_full_index)['Real_Value'].sum().reset_index()
-                        df_full_audit.columns = ['Material', 'Proyecto', 'Total Emitido'] if proyecto_col else ['Material', 'Total Emitido']
-                        
+                        if _audit_qty_detail is not None:
+                            df_full_audit = _audit_qty_detail.copy()
+                        else:
+                            df_full_audit = _audit_qty_master[['Material', 'Total Cantidad']].copy()
+
+                        # Añadir descripción al reporte
+                        if _desc_source:
+                            df_full_audit.insert(1, 'Descripción', df_full_audit['Material'].map(_desc_source).fillna(''))
+
                         df_full_audit['Justificación'] = df_full_audit.apply(
-                            lambda x: st.session_state['dict_justificaciones'].get(f"{x['Material']}_{x['Proyecto'] if proyecto_col else x['Material']}", ""), 
-                            axis=1
+                            lambda x: st.session_state['dict_justificaciones'].get(
+                                f"{x['Material']}_{x['Proyecto'] if 'Proyecto' in x.index else x['Material']}", ""
+                            ), axis=1
                         )
-                        
+
                         st.session_state['last_full_audit'] = df_full_audit
                         st.success("Reporte preparado con éxito.")
 
@@ -733,7 +786,7 @@ def show(df, apply_filters):
                             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                                 df_sel.to_excel(writer, index=False, sheet_name='Fuera de Programa')
                             return output.getvalue()
-                         
+
                          st.download_button(
                             label="📥 Descargar Excel",
                             data=to_excel_audit(st.session_state['last_full_audit']),
@@ -742,5 +795,7 @@ def show(df, apply_filters):
                             use_container_width=True,
                             type="primary"
                          )
+        elif 'df_real_unmapped' in locals() and not df_real_unmapped.empty:
+            st.info("Los datos de auditoría están disponibles pero no se pudieron procesar las cantidades.")
         else:
             st.success("✅ ¡Perfecto! Todos los materiales emitidos se encuentran en la previsión.")
