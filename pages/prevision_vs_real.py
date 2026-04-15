@@ -36,7 +36,7 @@ def load_ejecutado():
         ]
         credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         gc = gspread.authorize(credentials)
-        sh = gc.open("EJECUTADO")
+        sh = gc.open("EMITIDO")
         # Usamos la primera hoja por defecto
         worksheet = sh.get_worksheet(0)
         data = worksheet.get(value_render_option='UNFORMATTED_VALUE')
