@@ -188,7 +188,7 @@ def _create_ranked_bar(df, label_col, value_col, title, selected_label=None, top
 
     fig = go.Figure(go.Bar(
         x=plot_df[value_col],
-        y=plot_df[label_col].str[:50],  # Truncar etiquetas largas
+        y=plot_df[label_col].str[:65],  # Truncar etiquetas largas para mejor visualización
         orientation='h',
         marker_color=colors,
         text=text,
@@ -267,23 +267,23 @@ def show(df, apply_filters):
     with tab1:
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader("🏛️ Distribución por Sección")
+            st.subheader("🏛️ Distribución por Zona")
             fig_seccion = _create_custom_donut(
                 df_filtered.groupby('Seccion', dropna=False)['Valor_Anual'].sum().reset_index(),
                 label_col='Seccion',
                 value_col='Valor_Anual',
-                title='Distribución del Presupuesto por Sección',
+                title='Distribución por Zona',
                 is_currency=True
             )
             st.plotly_chart(fig_seccion, use_container_width=True)
         
         with col2:
-            st.subheader("⚡ Distribución por Área")
+            st.subheader("⚡ Distribución por Sección")
             fig_area = _create_custom_donut(
                 df_filtered.groupby('AREA', dropna=False)['Valor_Anual'].sum().reset_index(),
                 label_col='AREA',
                 value_col='Valor_Anual',
-                title='Distribución del Presupuesto por Área Técnica',
+                title='Distribución por Sección Técnica',
                 is_currency=True
             )
             st.plotly_chart(fig_area, use_container_width=True)
@@ -388,10 +388,10 @@ def show(df, apply_filters):
                     hide_index=True,
                     height=300,
                     column_config={
-                        'Cantidad': st.column_config.NumberColumn(format="%.0f"),
-                        'Valor': st.column_config.NumberColumn(format="S/ %.0f"),
-                        'P.U.': st.column_config.NumberColumn(format="S/ %.2f"),
-                        'Proyectos': st.column_config.NumberColumn(format="%d")
+                        'Cantidad': st.column_config.NumberColumn(format="%,.0f"),
+                        'Valor': st.column_config.NumberColumn(format="S/ %,.0f"),
+                        'P.U.': st.column_config.NumberColumn(format="S/ %,.2f"),
+                        'Proyectos': st.column_config.NumberColumn(format="%,d")
                     }
                 )
                 st.caption(f"Mostrando {len(mat_tabla)} de {len(materiales)} materiales (máx 50 en tabla)")
@@ -431,8 +431,8 @@ def show(df, apply_filters):
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    'Valor Total Anual': st.column_config.NumberColumn(format="S/ %.0f"),
-                    'N° Materiales': st.column_config.NumberColumn(format="%d")
+                    'Valor Total Anual': st.column_config.NumberColumn(format="S/ %,.0f"),
+                    'N° Materiales': st.column_config.NumberColumn(format="%,d")
                 }
             )
 
@@ -565,12 +565,12 @@ def show(df, apply_filters):
                 column_config={
                     'Material': st.column_config.TextColumn('Material', disabled=True),
                     'Unidad': st.column_config.TextColumn('Unidad', disabled=True),
-                    'Máx. Histórico': st.column_config.NumberColumn(format="%.0f", disabled=True, help="Unidades redondeadas"),
-                    'Previsión 2026': st.column_config.NumberColumn(format="%.0f", disabled=True, help="Unidades redondeadas"),
-                    'Diferencia': st.column_config.NumberColumn(format="%+.0f", disabled=True, help="Diferencia de unidades redondeada"),
+                    'Máx. Histórico': st.column_config.NumberColumn(format="%,.0f", disabled=True, help="Unidades redondeadas"),
+                    'Previsión 2026': st.column_config.NumberColumn(format="%,.0f", disabled=True, help="Unidades redondeadas"),
+                    'Diferencia': st.column_config.NumberColumn(format="%+,.0f", disabled=True, help="Diferencia de unidades redondeada"),
                     '% Variación': st.column_config.NumberColumn(format="%.1f%%", disabled=True),
                     'Estado': st.column_config.TextColumn('Estado', disabled=True),
-                    'Valor 2026 (S/.)': st.column_config.NumberColumn(format="S/ %.0f", disabled=True),
+                    'Valor 2026 (S/.)': st.column_config.NumberColumn(format="S/ %,.0f", disabled=True),
                     'Justificación': st.column_config.TextColumn(
                         '📝 Justificación',
                         help='Escribe aquí el motivo de la variación (ej: mayor meta en Proyecto X)',

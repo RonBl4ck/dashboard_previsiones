@@ -202,11 +202,11 @@ def show(df, apply_filters):
                 "Proyecto": st.column_config.TextColumn("Proyecto"),
                 "Presupuesto Original": st.column_config.NumberColumn(
                     "Presupuesto Original (S/.)",
-                    format="S/ %.2f",
+                    format="S/ %,.2f",
                 ),
                 "Presupuesto Simulado": st.column_config.NumberColumn(
                     "Presupuesto Simulado (S/.)",
-                    format="S/ %.2f",
+                    format="S/ %,.2f",
                 ),
             },
         )
@@ -246,12 +246,12 @@ def show(df, apply_filters):
                 "Proyecto": st.column_config.TextColumn("Proyecto", disabled=True),
                 "Presupuesto Original": st.column_config.NumberColumn(
                     "Presupuesto Original (S/.)",
-                    format="S/ %.2f",
+                    format="S/ %,.2f",
                     disabled=True,
                 ),
                 "Presupuesto Simulado": st.column_config.NumberColumn(
                     "Presupuesto Simulado (S/.)",
-                    format="S/ %.0f",
+                    format="S/ %,.0f",
                     step=1000.0,
                 ),
             },
@@ -284,9 +284,9 @@ def show(df, apply_filters):
             hide_index=True,
             use_container_width=True,
             column_config={
-                "Presupuesto Original": st.column_config.NumberColumn(format="S/ %.2f"),
-                "Presupuesto Simulado": st.column_config.NumberColumn(format="S/ %.2f"),
-                "Diferencia": st.column_config.NumberColumn(format="S/ %+.2f"),
+                "Presupuesto Original": st.column_config.NumberColumn(format="S/ %,.2f"),
+                "Presupuesto Simulado": st.column_config.NumberColumn(format="S/ %,.2f"),
+                "Diferencia": st.column_config.NumberColumn(format="S/ %+, .2f"),
             },
         )
 
@@ -405,9 +405,9 @@ def show(df, apply_filters):
         use_container_width=True,
         hide_index=True,
         column_config={
-            "Cantidad Original": st.column_config.NumberColumn(format="%.0f", help="Unidades redondeadas (cálculo exacto interno)"),
-            "Cantidad Simulada": st.column_config.NumberColumn(format="%.0f", help="Unidades redondeadas (cálculo exacto interno)"),
-            "Diferencia Cantidad": st.column_config.NumberColumn(format="%+.0f", help="Diferencia de unidades redondeada"),
+            "Cantidad Original": st.column_config.NumberColumn(format="%,.0f", help="Unidades redondeadas (cálculo exacto interno)"),
+            "Cantidad Simulada": st.column_config.NumberColumn(format="%,.0f", help="Unidades redondeadas (cálculo exacto interno)"),
+            "Diferencia Cantidad": st.column_config.NumberColumn(format="%+,.0f", help="Diferencia de unidades redondeada"),
         },
     )
 
@@ -432,7 +432,7 @@ def show(df, apply_filters):
         use_container_width=True,
         hide_index=True,
         column_config={
-            col: st.column_config.NumberColumn(format="%.0f", help="Unidades redondeadas visualmente")
+            col: st.column_config.NumberColumn(format="%,.0f", help="Unidades redondeadas visualmente")
             for col in detalle_mensual.columns
             if col not in ['Nombre del proyecto', 'DESCRIPCION']
         },

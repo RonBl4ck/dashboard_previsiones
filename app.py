@@ -273,7 +273,7 @@ def load_data(file_path=None):
 
     # Agregar codigo de proyecto al nombre
     if 'Codigo del Proyecto' in df.columns and 'Nombre del proyecto' in df.columns:
-        df['Nombre del proyecto'] = df['Nombre del proyecto'].astype(str) + ' (' + df['Codigo del Proyecto'].astype(str) + ')'
+        df['Nombre del proyecto'] = '[' + df['Codigo del Proyecto'].astype(str) + '] ' + df['Nombre del proyecto'].astype(str)
 
     return df
 
@@ -295,8 +295,9 @@ with st.sidebar:
     selected = option_menu(
         menu_title=None,
         options=["Resumen", "Previsión vs Emitido", 
+                 "Previsión vs Consumo",
                  "Simulador", "Saldos y Ajustes"],
-        icons=["house", "graph-up-arrow", "sliders", "box-seam"],
+        icons=["house", "graph-up-arrow", "clipboard-data", "sliders", "box-seam"],
         menu_icon="cast",
         default_index=0,
         orientation="vertical",
@@ -361,6 +362,10 @@ if not df_principal.empty:
     elif selected == "Previsión vs Emitido":
         from pages import prevision_vs_real
         prevision_vs_real.show(df_principal, apply_filters)
+        
+    elif selected == "Previsión vs Consumo":
+        from pages import prevision_vs_consumo
+        prevision_vs_consumo.show(df_principal)
         
     elif selected == "Simulador":
         from pages import simulador

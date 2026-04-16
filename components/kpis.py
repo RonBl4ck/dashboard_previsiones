@@ -46,10 +46,10 @@ def calculate_main_kpis(df):
         kpis['Promedio Mensual'] = f"S/ {sum(valor_mensual)/len(valor_mensual):,.0f}"
     
     # Número de proyectos
-    kpis['Proyectos'] = f"{df['Nombre del proyecto'].nunique()}"
+    kpis['Proyectos'] = f"{df['Nombre del proyecto'].nunique():,}"
     
     # Número de materiales
-    kpis['Materiales'] = f"{df['DESCRIPCION'].nunique()}"
+    kpis['Materiales'] = f"{df['DESCRIPCION'].nunique():,}"
     
     # Mes pico
     if valor_mensual and meses_valor:

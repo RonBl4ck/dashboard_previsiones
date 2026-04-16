@@ -14,7 +14,7 @@ sys.path.append('..')
 
 
 def _money_column():
-    return st.column_config.NumberColumn(format="S/ %.0f")
+    return st.column_config.NumberColumn(format="S/ %,.0f")
 
 
 def _bar_text(values, tipo_comparacion):
@@ -628,36 +628,64 @@ def show(df, apply_filters):
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    'Cantidad': st.column_config.NumberColumn(format="%.0f"),
-                    'Previsión': _money_column() if tipo_comparacion != "Cantidad Física" else st.column_config.NumberColumn(format="%.0f"),
-                    'Emitido': _money_column() if tipo_comparacion != "Cantidad Física" else st.column_config.NumberColumn(format="%.0f")
+                    'Cantidad': st.column_config.NumberColumn(format="%,.0f"),
+                    'Previsión': _money_column() if tipo_comparacion != "Cantidad Física" else st.column_config.NumberColumn(format="%,.0f"),
+                    'Emitido': _money_column() if tipo_comparacion != "Cantidad Física" else st.column_config.NumberColumn(format="%,.0f")
                 }
             )
 
     with tab_tabla:
         st.subheader("📋 Tabla de Cumplimiento")
-        st.caption("Cumplimiento por proyecto, ordenado por previsión total")
+        st.caption("Cumplimiento por proyecto, ordenado por PI")
+
+        # Preparar datos agregados por proyecto
         detalle_base = df_comparison.groupby('Nombre del proyecto', dropna=False).sum(numeric_only=True).reset_index()
+        
         detalle_rows = []
         for _, row in detalle_base.iterrows():
+            full_name = str(row['Nombre del proyecto'])
+            # Extraer PI y Nombre (nuevo formato: [PI] Nombre)
+            if full_name.startswith('[') and '] ' in full_name:
+                pi_proy = full_name.split('] ', 1)[0][1:]
+                desc_proy = full_name.split('] ', 1)[1]
+            else:
+                pi_proy = "-"
+                desc_proy = full_name
+
             total_prev_proyecto = row[[m for m in meses_prev_activos if m in row]].sum()
             total_real_proyecto = row[[m for m in meses_real_activos if m in row]].sum() if real_mode == 'row' else np.nan
+            
             detalle_rows.append({
-                'Proyecto': row['Nombre del proyecto'],
+                'PI': pi_proy,
+                'Descripción del Proyecto': desc_proy,
                 'Previsión Total': total_prev_proyecto,
                 'Emitido Total': total_real_proyecto,
                 'Diferencia': total_real_proyecto - total_prev_proyecto if pd.notna(total_real_proyecto) else np.nan,
                 '% Cumplimiento': (total_real_proyecto / total_prev_proyecto * 100) if pd.notna(total_real_proyecto) and total_prev_proyecto > 0 else np.nan
             })
-        df_detalle = pd.DataFrame(detalle_rows).sort_values('Previsión Total', ascending=False)
+        
+        df_detalle = pd.DataFrame(detalle_rows).sort_values('PI')
+
+        # --- BUSCADOR DE PROYECTOS ---
+        col_search_t, _ = st.columns([1, 1])
+        with col_search_t:
+            search_proy = st.text_input("🔍 Buscar proyecto (PI o Nombre):", placeholder="Ej: P001 o ACARREO...")
+
+        if search_proy:
+            mask = (df_detalle['PI'].str.contains(search_proy, case=False, na=False)) | \
+                   (df_detalle['Descripción del Proyecto'].str.contains(search_proy, case=False, na=False))
+            df_detalle_view = df_detalle[mask]
+        else:
+            df_detalle_view = df_detalle
+
         st.dataframe(
-            df_detalle,
+            df_detalle_view,
             use_container_width=True,
             hide_index=True,
             column_config={
-                'Previsión Total': _money_column() if tipo_comparacion != "Cantidad Física" else st.column_config.NumberColumn(format="%.0f"),
-                'Emitido Total': _money_column() if tipo_comparacion != "Cantidad Física" else st.column_config.NumberColumn(format="%.0f"),
-                'Diferencia': _money_column() if tipo_comparacion != "Cantidad Física" else st.column_config.NumberColumn(format="%.0f"),
+                'Previsión Total': _money_column() if tipo_comparacion != "Cantidad Física" else st.column_config.NumberColumn(format="%,.0f"),
+                'Emitido Total': _money_column() if tipo_comparacion != "Cantidad Física" else st.column_config.NumberColumn(format="%,.0f"),
+                'Diferencia': _money_column() if tipo_comparacion != "Cantidad Física" else st.column_config.NumberColumn(format="%,.0f"),
                 '% Cumplimiento': st.column_config.NumberColumn(format="%.1f%%")
             }
         )
@@ -665,6 +693,17 @@ def show(df, apply_filters):
     with tab_auditoria:
         st.subheader("📋 Auditoría de Materiales")
         st.caption("Gestión de materiales en 'EJECUTADO' que no están en la Previsión 2026. (Siempre por Cantidad Física)")
+
+        # --- MAPEO DE PROYECTOS PARA LA AUDITORÍA ---
+        # Creamos un diccionario: PI -> Nombre descriptivo
+        _audit_proy_map = {}
+        if 'Nombre del proyecto' in df_comparison.columns:
+            for full_name in df_comparison['Nombre del proyecto'].unique():
+                full_name = str(full_name)
+                if full_name.startswith('[') and '] ' in full_name:
+                    p = full_name.split('] ', 1)[0][1:]
+                    d = full_name.split('] ', 1)[1]
+                    _audit_proy_map[p] = d
 
         if not _audit_qty_master.empty:
             df_master_audit = _audit_qty_master.copy()
@@ -691,7 +730,7 @@ def show(df, apply_filters):
                     hide_index=True,
                     column_config={
                         "Total Cantidad": st.column_config.NumberColumn(format="%,.0f"),
-                        "N° Proyectos": st.column_config.NumberColumn(format="%.0f")
+                        "N° Proyectos": st.column_config.NumberColumn(format="%,d")
                     }
                 )
 
@@ -718,10 +757,17 @@ def show(df, apply_filters):
 
             # --- VISTA DETALLE ---
             if selected_material:
-                st.write(f"**Detalle de Proyectos para:** `{selected_material}`")
+                # Obtener descripción del material seleccionado
+                _sel_desc = df_master_audit[df_master_audit['Material'] == selected_material]['Descripción'].iloc[0] if 'Descripción' in df_master_audit.columns else ""
+                
+                st.markdown(f"### 📄 Detalle de Proyectos para: `{selected_material}`")
+                if _sel_desc:
+                    st.markdown(f"**Descripción Técnica:** `{_sel_desc}`")
 
                 if _audit_qty_detail is not None:
                     df_detail_grouped = _audit_qty_detail[_audit_qty_detail['Material'] == selected_material][['Proyecto', 'Total Cantidad']].copy()
+                    # Añadir descripción del proyecto
+                    df_detail_grouped.insert(1, 'Descripción del Proyecto', df_detail_grouped['Proyecto'].map(_audit_proy_map).fillna('-'))
                 else:
                     # Fallback: sin desglose por proyecto
                     _mat_total = _audit_qty_master[_audit_qty_master['Material'] == selected_material]['Total Cantidad'].sum()

@@ -100,3 +100,51 @@ def update_saldos_batch(updates_df):
     except Exception as e:
         st.error(f"Error actualizando saldos en Sheets: {e}")
         return False
+
+def init_consumo_notes_sheet():
+    """Asegura que la hoja NOTAS_CONSUMO exista en PREVISIONES 2026."""
+    gc = get_gspread_client()
+    if not gc: return None
+
+    cols = ["Matricula", "Anotacion"]
+    try:
+        sh = gc.open("PREVISIONES 2026")
+        try:
+            worksheet = sh.worksheet("NOTAS_CONSUMO")
+        except gspread.exceptions.WorksheetNotFound:
+            worksheet = sh.add_worksheet(title="NOTAS_CONSUMO", rows="1000", cols=str(len(cols)))
+            worksheet.append_row(cols)
+        return worksheet
+    except Exception as e:
+        st.error(f"Error accediendo a la hoja PREVISIONES 2026 (NOTAS_CONSUMO): {e}")
+        return None
+
+def get_consumo_notes():
+    """Obtiene las anotaciones de consumo como un diccionario {matricula: anotacion}."""
+    worksheet = init_consumo_notes_sheet()
+    if not worksheet: return {}
+    
+    try:
+        data = worksheet.get_all_records()
+        if not data: return {}
+        return {str(r['Matricula']).strip(): str(r['Anotacion']).strip() for r in data if 'Matricula' in r}
+    except Exception as e:
+        st.error(f"Error cargando notas de consumo: {e}")
+        return {}
+
+def update_consumo_notes_batch(notes_df):
+    """Actualiza la hoja de notas de consumo en batch."""
+    worksheet = init_consumo_notes_sheet()
+    if not worksheet: return False
+    
+    try:
+        cols = ["Matricula", "Anotacion"]
+        upload_df = notes_df[cols].copy()
+        upload_df = upload_df.fillna('')
+        
+        worksheet.clear()
+        worksheet.update([cols] + upload_df.values.tolist())
+        return True
+    except Exception as e:
+        st.error(f"Error actualizando notas de consumo en Sheets: {e}")
+        return False
