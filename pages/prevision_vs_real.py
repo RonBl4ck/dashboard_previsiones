@@ -48,7 +48,7 @@ def load_ejecutado():
         df.replace("", pd.NA, inplace=True)
         return df
     except Exception as e:
-        st.error(f"Error conectando a Google Sheets (EJECUTADO): {e}")
+        st.error(f"Error conectando a Google Sheets (EMITIDO): {e}")
         return None
 
 
