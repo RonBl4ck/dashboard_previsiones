@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import sys
+import io
 from utils.google_sheets_helper import get_gspread_client, get_consumo_notes, update_consumo_notes_batch
 
 sys.path.append('..')
@@ -161,8 +162,9 @@ def show(df_prevision):
         }
     )
 
-    # 7. Botón de Guardado
-    col_btn1, col_btn2 = st.columns([1, 4])
+    # 7. Botón de Guardado y Descarga
+    col_btn1, col_btn2, col_btn3 = st.columns([1.5, 1.5, 3])
+    
     with col_btn1:
         if st.button("💾 Guardar Cambios", type="primary", use_container_width=True):
             # Preparar dataframe para subir
@@ -171,7 +173,6 @@ def show(df_prevision):
             df_update.columns = ['Matricula', 'Anotacion']
             
             # Combinar con las notas actuales para no borrar materiales que no aparecen en el filtro actual (si los hubiera)
-            # Aunque en este caso el filtro es "todos los faltantes", es mejor ser precavidos.
             all_notes_df = pd.DataFrame(list(dict_notas.items()), columns=['Matricula', 'Anotacion'])
             
             if not all_notes_df.empty:
@@ -185,8 +186,45 @@ def show(df_prevision):
             if update_consumo_notes_batch(final_notes_df):
                 st.success("✅ Anotaciones guardadas correctamente en Google Sheets.")
                 st.cache_data.clear()
-                # Pequeño delay no es posible en streamlit directamente pero rerun refresca
                 st.rerun()
 
     with col_btn2:
-        st.info("💡 Consejo: Usa las anotaciones para documentar por qué un material histórico fue omitido o si debe incluirse próximamente.")
+        # Preparación de datos para exportar a Excel
+        buffer = io.BytesIO()
+        
+        # Sincronizar anotaciones del editor en el DataFrame de exportación
+        df_export = df_faltantes.copy()
+        # Mapear anotaciones desde edited_df (que el usuario pudo haber modificado)
+        notas_actualizadas = dict(zip(edited_df['Matrícula'], edited_df['Anotación']))
+        df_export['Anotación'] = df_export['Matricula_Clean'].map(notas_actualizadas).fillna('')
+        
+        # Seleccionar y renombrar columnas para el Excel
+        export_cols = {
+            'Matricula': 'Matrícula',
+            'Descripcion': 'Descripción',
+            col_2023: 'Consumo 2023',
+            col_2024: 'Consumo 2024',
+            col_2025: 'Consumo 2025',
+            'Máximo Histórico': 'Máximo Histórico',
+            'EXISTE EN MATERIALES': 'Existe en Base (Mase)',
+            'Anotación': 'Anotación'
+        }
+        
+        # Filtrar solo las que existen
+        cols_finales = [c for c in export_cols.keys() if c in df_export.columns]
+        df_to_excel = df_export[cols_finales].rename(columns=export_cols)
+        
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df_to_excel.to_excel(writer, index=False, sheet_name='Materiales Omitidos')
+            
+        st.download_button(
+            label="📥 Descargar Excel",
+            data=buffer.getvalue(),
+            file_name="materiales_omitidos_consumo.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            help="Descarga la lista de materiales omitidos con su historial de consumo y anotaciones."
+        )
+
+    with col_btn3:
+        st.info("💡 Consejo: Usa las anotaciones para documentar por qué un material histórico fue omitido.")
