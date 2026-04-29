@@ -217,9 +217,25 @@ def load_data(file_path=None):
             return pd.DataFrame()
 
     # --- Limpieza comun (Excel y Sheets) ---
+    total_inicial = len(df)
+    
+    # Asegurar que Año sea numérico
     df['Año'] = pd.to_numeric(df['Año'], errors='coerce')
-    df = df[df['Año'] == 2026].copy()
-    df = df.dropna(subset=['DESCRIPCION'])
+    
+    # Conteo de descartados por Año
+    df_solo_2026 = df[df['Año'] == 2026].copy()
+    descartados_año = total_inicial - len(df_solo_2026)
+    
+    # Conteo de descartados por Descripción
+    df_final = df_solo_2026.dropna(subset=['DESCRIPCION'])
+    descartados_desc = len(df_solo_2026) - len(df_final)
+    
+    # Guardar en session_state para diagnóstico
+    st.session_state['diag_total'] = total_inicial
+    st.session_state['diag_no_2026'] = descartados_año
+    st.session_state['diag_no_desc'] = descartados_desc
+    
+    df = df_final.copy()
 
     # Estandarizar Matricula y Descripcion
     s_mat = df['Matricula'].copy() if 'Matricula' in df.columns else pd.Series('S/M', index=df.index)
@@ -282,8 +298,7 @@ def load_data(file_path=None):
 with st.sidebar:
     st.markdown("""
     <div style="text-align: center; padding: 8px 0 12px 0;">
-        <h2 style="color: white; margin: 0;">📊 Previsiones 2026</h2>
-        <p style="color: #E9ECEF; font-size: 0.9rem;">Dashboard de Análisis</p>
+        <h2 style="color: white; margin: 0;">Previsiones 2026</h2>
     </div>
     """, unsafe_allow_html=True)
     
@@ -294,10 +309,10 @@ with st.sidebar:
     
     selected = option_menu(
         menu_title=None,
-        options=["Resumen", "Previsión vs Emitido", 
-                 "Previsión vs Consumo",
-                 "Simulador", "Saldos y Ajustes"],
-        icons=["house", "graph-up-arrow", "clipboard-data", "sliders", "box-seam"],
+        options=["Gestor de Previsiones", "Calculadora de Materiales", 
+                 "Control de Ejecución", "Análisis de Consumo",
+                 "Histórico de Presupuestos", "Resumen"],
+        icons=["sliders", "calculator", "graph-up-arrow", "clipboard-data", "calendar-check", "house"],
         menu_icon="cast",
         default_index=0,
         orientation="vertical",
@@ -322,6 +337,9 @@ with st.sidebar:
     st.markdown("### 🎛️ Filtros Globales")
     
     df_principal = load_data()
+    if not df_principal.empty:
+        st.sidebar.caption(f"📊 {len(df_principal)} filas de previsión cargadas.")
+    
     try:
         # Filtro de Sección
         secciones = ['Todas'] + list(df_principal['Seccion'].dropna().unique())
@@ -338,7 +356,21 @@ with st.sidebar:
 
     # ---
     # La carga de datos ahora es automática desde Google Sheets.
-    # Se eliminó la opción de subir Excel manual para mayor consistencia.
+    if st.button("🔄 Actualizar Datos", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+    
+    st.caption("Nota: Solo se cargan filas con 'Año' = 2026 y 'Descripción' válida.")
+
+    # Diagnóstico de datos
+    with st.expander("🔍 Diagnóstico de Carga"):
+        if 'diag_total' in st.session_state:
+            st.write(f"**Total filas en Excel:** {st.session_state['diag_total']}")
+            st.write(f"**Ignoradas (Año != 2026):** {st.session_state['diag_no_2026']}")
+            st.write(f"**Ignoradas (Sin descripción):** {st.session_state['diag_no_desc']}")
+            st.write(f"**Cargadas final:** {len(df_principal)}")
+        else:
+            st.info("Pulsa 'Actualizar Datos' para ver el diagnóstico.")
 
 # Función para aplicar filtros
 def apply_filters(df):
@@ -355,24 +387,32 @@ def apply_filters(df):
 
 # Contenido según selección
 if not df_principal.empty:
-    if selected == "Resumen":
-        from pages import resumen_ejecutivo
-        resumen_ejecutivo.show(df_principal, apply_filters)
-        
-    elif selected == "Previsión vs Emitido":
-        from pages import prevision_vs_real
-        prevision_vs_real.show(df_principal, apply_filters)
-        
-    elif selected == "Previsión vs Consumo":
-        from pages import prevision_vs_consumo
-        prevision_vs_consumo.show(df_principal)
-        
-    elif selected == "Simulador":
+    if selected == "Gestor de Previsiones":
         from pages import simulador
         simulador.show(df_principal, apply_filters)
         
-    elif selected == "Saldos y Ajustes":
-        from pages import saldos
-        saldos.show(df_principal, apply_filters)
+    elif selected == "Calculadora de Materiales":
+        from pages import calculadora_proporciones
+        calculadora_proporciones.show(df_principal)
+        
+    elif selected == "Control de Ejecución":
+        from pages import prevision_vs_real
+        prevision_vs_real.show(df_principal, apply_filters)
+        
+    elif selected == "Análisis de Consumo":
+        from pages import prevision_vs_consumo
+        prevision_vs_consumo.show(df_principal)
+        
+    elif selected == "Histórico de Presupuestos":
+        from pages import presupuesto_historico
+        presupuesto_historico.show(df_principal)
+        
+    elif selected == "Resumen":
+        from pages import resumen_ejecutivo
+        resumen_ejecutivo.show(df_principal, apply_filters)
+        
+    # elif selected == "Saldos y Ajustes":
+    #     from pages import saldos
+    #     saldos.show(df_principal, apply_filters)
 else:
     st.warning("No se pudieron cargar los datos principales. Verifica el archivo de origen.")

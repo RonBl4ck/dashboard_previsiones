@@ -33,8 +33,9 @@ def load_consumo_data():
         st.error(f"Error cargando el archivo 'CONSUMO' de Google Sheets: {e}")
         return pd.DataFrame()
 
+
 def show(df_prevision):
-    st.title("📊 Previsión vs Consumo Histórico")
+    st.title("Análisis de Consumo")
     st.markdown("""
     Esta página identifica materiales que fueron consumidos en años anteriores (2023-2025) 
     pero que **no están incluidos** en la previsión actual de 2026.
@@ -228,3 +229,4 @@ def show(df_prevision):
 
     with col_btn3:
         st.info("💡 Consejo: Usa las anotaciones para documentar por qué un material histórico fue omitido.")
+

@@ -55,7 +55,7 @@ def load_ejecutado():
 def show(df, apply_filters):
     """Función principal de la página de Previsión vs Emitido"""
 
-    st.title("📊 Previsión vs Emitido")
+    st.title("Control de Ejecución")
     st.markdown("---")
 
     df_filtered = apply_filters(df)
