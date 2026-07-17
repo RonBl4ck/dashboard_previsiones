@@ -359,8 +359,10 @@ def get_emitido_series(df_emitido, pi_code, meses):
 
 # --- LOGICA DE SIMULACION ---
 
-def build_pi_series(df_pi_original, emitido_dict, pres_mat_simulado, cutoff_idx, meses, perfil='Original', mes_fin='Dic'):
+def build_pi_series(df_pi_original, emitido_dict, pres_mat_simulado, cutoff_idx, meses, perfil='Original', mes_fin='Dic', mes_inicio=None):
     orig = [df_pi_original[f'Valor_{m}'].sum() if f'Valor_{m}' in df_pi_original.columns else 0.0 for m in meses]
+    
+    pesos_sinteticos = [0.0] * 12
     
     # --- APLICAR PERFIL SINTÉTICO SI NO ES ORIGINAL ---
     if perfil != 'Original':
@@ -368,34 +370,45 @@ def build_pi_series(df_pi_original, emitido_dict, pres_mat_simulado, cutoff_idx,
             mes_fin_idx = meses.index(mes_fin)
         except ValueError:
             mes_fin_idx = 11
+            
+        try:
+            mes_inicio_idx = meses.index(mes_inicio) if mes_inicio else cutoff_idx + 1
+        except ValueError:
+            mes_inicio_idx = cutoff_idx + 1
+            
+        # Limitar mes_inicio_idx al rango de meses futuros válidos
+        mes_inicio_idx = max(cutoff_idx + 1, min(mes_inicio_idx, mes_fin_idx))
         
-        # Reiniciar orig a 0 para construirlo sintéticamente
-        orig = [0.0] * 12
-        
-        # Llenar la curva solo en el tramo [cutoff_idx+1 ... mes_fin_idx]
-        for i in range(cutoff_idx + 1, mes_fin_idx + 1):
+        # Llenar la curva solo en el tramo [mes_inicio_idx ... mes_fin_idx]
+        for i in range(mes_inicio_idx, mes_fin_idx + 1):
             if perfil == 'Lineal':
-                orig[i] = 1.0  # Pesos iguales
+                pesos_sinteticos[i] = 1.0  # Pesos iguales
             elif perfil == 'Creciente':
                 # Sucesión aritmética: 1, 2, 3...
-                orig[i] = float(i - cutoff_idx)
+                pesos_sinteticos[i] = float(i - mes_inicio_idx + 1)
             elif perfil == 'Montaña':
                 # Lógica 10-80-10 para los meses en el rango
-                total_meses_futuros = mes_fin_idx - cutoff_idx
-                idx_en_rango = i - (cutoff_idx + 1)
+                total_meses_futuros = mes_fin_idx - mes_inicio_idx + 1
+                idx_en_rango = i - mes_inicio_idx
                 
                 if total_meses_futuros == 3:
                     pesos_montana = [0.10, 0.80, 0.10]
-                    orig[i] = pesos_montana[idx_en_rango]
+                    pesos_sinteticos[i] = pesos_montana[idx_en_rango]
                 elif total_meses_futuros < 3:
-                    orig[i] = 1.0 # Lineal si hay poco espacio
+                    pesos_sinteticos[i] = 1.0 # Lineal si hay poco espacio
                 else:
                     # Si hay más de 3, poner el pico en el medio
                     mid = total_meses_futuros // 2
                     if idx_en_rango == mid:
-                        orig[i] = 0.80
+                        pesos_sinteticos[i] = 0.80
                     else:
-                        orig[i] = 0.20 / (total_meses_futuros - 1)
+                        pesos_sinteticos[i] = 0.20 / (total_meses_futuros - 1)
+            elif perfil == 'Montaña Natural':
+                # Distribución senoidal (campana suave) para los meses en el rango
+                total_meses_futuros = mes_fin_idx - mes_inicio_idx + 1
+                idx_en_rango = i - mes_inicio_idx
+                if total_meses_futuros >= 1:
+                    pesos_sinteticos[i] = math.sin(math.pi * (idx_en_rango + 0.5) / total_meses_futuros)
     
     serie = []
     total_real = 0.0
@@ -411,7 +424,9 @@ def build_pi_series(df_pi_original, emitido_dict, pres_mat_simulado, cutoff_idx,
     saldo = pres_mat_simulado - total_real
     saldo_calculo = max(0.0, saldo)
     rest_idx = list(range(cutoff_idx + 1, len(meses)))
-    pesos = [orig[i] for i in rest_idx]
+    
+    # Usar pesos sintéticos si no es perfil original
+    pesos = [pesos_sinteticos[i] for i in rest_idx] if perfil != 'Original' else [orig[i] for i in rest_idx]
     total_pesos = sum(pesos)
     
     ratios = {}
@@ -700,9 +715,11 @@ def show(df, apply_filters):
     
     # Inicializar columnas editables con valores por defecto.
     # El st.data_editor con key persistirá los cambios del usuario automáticamente.
+    default_mes_inicio = MESES[max(0, cutoff_idx + 1)] if cutoff_idx < 11 else 'Dic'
     pi_data['Nuevo Presupuesto Total'] = None
     pi_data['Restar a Materiales'] = None
     pi_data['Perfil Curva'] = 'Original'
+    pi_data['Mes Inicio'] = default_mes_inicio
     pi_data['Mes Fin'] = 'Dic'
     
     # 3. Editor de Datos
@@ -719,7 +736,8 @@ def show(df, apply_filters):
             "Presupuesto Actual": st.column_config.NumberColumn("Presup. Mat. Orig (S/.)", format="S/ %,.0f", disabled=True),
             "Nuevo Presupuesto Total": st.column_config.NumberColumn("Nuevo Total PI (S/.)", format="S/ %,.0f", min_value=0.0),
             "Restar a Materiales": st.column_config.NumberColumn("Restar a Mat. (S/.)", format="S/ %,.0f", min_value=0.0),
-            "Perfil Curva": st.column_config.SelectboxColumn("Perfil Curva", options=["Original", "Lineal", "Creciente", "Montaña"]),
+            "Perfil Curva": st.column_config.SelectboxColumn("Perfil Curva", options=["Original", "Lineal", "Creciente", "Montaña", "Montaña Natural"]),
+            "Mes Inicio": st.column_config.SelectboxColumn("Mes Inicio", options=MESES[max(0, cutoff_idx+1):]),
             "Mes Fin": st.column_config.SelectboxColumn("Mes Fin", options=MESES[max(0, cutoff_idx+1):])
         },
         hide_index=True,
@@ -867,16 +885,19 @@ def show(df, apply_filters):
         emitido_pi = get_emitido_series(df_emitido_all, pi, MESES)
         
         perfil_curva = row.get('Perfil Curva', 'Original')
+        default_mes_inicio = MESES[max(0, cutoff_idx + 1)] if cutoff_idx < 11 else 'Dic'
+        mes_inicio = row.get('Mes Inicio', default_mes_inicio)
         mes_fin = row.get('Mes Fin', 'Dic')
         
         # Verificar si el usuario ha modificado este PI manualmente
         es_modificado = (pd.notna(row.get('Nuevo Presupuesto Total')) and row['Nuevo Presupuesto Total'] > 0) or \
                         (pd.notna(row.get('Restar a Materiales')) and row['Restar a Materiales'] > 0) or \
                         (perfil_curva != 'Original') or \
+                        (mes_inicio != default_mes_inicio) or \
                         (mes_fin != 'Dic')
         
         serie_pi, orig_pi, _, saldo_pi_val, ratios_pi, is_synthetic_pi = build_pi_series(
-            df_pi, emitido_pi, row['Simulado Materiales'], cutoff_idx, MESES, perfil_curva, mes_fin
+            df_pi, emitido_pi, row['Simulado Materiales'], cutoff_idx, MESES, perfil_curva, mes_fin, mes_inicio
         )
         
         # --- RECOLECTAR PARA EXCEL GLOBAL ---
@@ -890,6 +911,7 @@ def show(df, apply_filters):
             'Nuevo Presup. Mat.': row['Simulado Materiales'],
             'Saldo a Distribuir': saldo_pi_val,
             'Perfil': perfil_curva,
+            'Mes Inicio': mes_inicio,
             'Mes Fin': mes_fin
         }
         for i, m in enumerate(MESES):
@@ -1085,10 +1107,12 @@ def show(df, apply_filters):
         df_pi_sel = df_f[df_f['_pi_code'] == sel_code]
         emitido_sel = get_emitido_series(df_emitido_all, sel_code, MESES)
         perfil_s = sel_row.get('Perfil Curva', 'Original')
+        default_mes_inicio = MESES[max(0, cutoff_idx + 1)] if cutoff_idx < 11 else 'Dic'
+        mes_inicio_s = sel_row.get('Mes Inicio', default_mes_inicio)
         mes_fin_s = sel_row.get('Mes Fin', 'Dic')
         
         serie_s, orig_s, real_c, saldo_s, ratios_s, is_synthetic_s = build_pi_series(
-            df_pi_sel, emitido_sel, sel_row['Simulado Materiales'], cutoff_idx, MESES, perfil_s, mes_fin_s
+            df_pi_sel, emitido_sel, sel_row['Simulado Materiales'], cutoff_idx, MESES, perfil_s, mes_fin_s, mes_inicio_s
         )
         
         orig_up_to_cutoff = sum(orig_s[i] for i in range(cutoff_idx + 1))
